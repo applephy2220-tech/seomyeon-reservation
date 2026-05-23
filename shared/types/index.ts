@@ -25,6 +25,7 @@ export interface Seat {
   lockExpiresAt?: string; // ISO String when the lock expires (lockedAt + 5 min)
   lockedBy?: string; // UID of the user who locked it
   currentReservationId?: string; // ID of the confirmed reservation
+  tag?: string; // Glowing recommendation tags
 }
 
 export interface UserProfile {

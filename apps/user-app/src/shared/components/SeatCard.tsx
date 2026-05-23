@@ -68,12 +68,17 @@ export const SeatCard: React.FC<SeatCardProps> = ({
           )}
           
           {/* Seat Label */}
-          <h4 className="text-base font-bold text-white tracking-tight flex items-center gap-1.5">
+          <h4 className="text-base font-bold text-white tracking-tight flex items-center flex-wrap gap-1.5">
             {label}
             {status === 'available' && (
               <span className="inline-flex items-center gap-0.5 rounded bg-emerald-950/50 px-1 py-0.5 text-[10px] font-medium text-emerald-400 border border-emerald-500/20">
                 <Flame className="w-2.5 h-2.5" />
                 추천
+              </span>
+            )}
+            {status === 'available' && seat.tag && (
+              <span className="inline-flex items-center gap-0.5 rounded bg-purple-950/60 border border-purple-500/30 px-1.5 py-0.5 text-[9px] font-black text-purple-400 shadow-[0_0_8px_rgba(168,85,247,0.15)] animate-pulse">
+                ✨ {seat.tag}
               </span>
             )}
           </h4>

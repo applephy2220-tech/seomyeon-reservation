@@ -15,7 +15,12 @@ import { SeatStatus, Reservation } from '../types';
 /**
  * 1. Owner Action: Directly change a seat's status
  */
-export const changeSeatStatus = async (seatId: string, status: SeatStatus): Promise<void> => {
+export const changeSeatStatus = async (
+  seatId: string, 
+  status: SeatStatus,
+  availableUntil?: string,
+  tag?: string
+): Promise<void> => {
   const seatRef = doc(db, 'seats', seatId);
   try {
     const updateData: Record<string, unknown> = {
@@ -33,6 +38,21 @@ export const changeSeatStatus = async (seatId: string, status: SeatStatus): Prom
     // If freeing up the seat, sever active reservation association pointers
     if (status === 'available' || status === 'closed') {
       updateData.currentReservationId = null;
+    }
+
+    // Advanced Owner control: set custom duration and glowing tag if opening up
+    if (status === 'available') {
+      if (availableUntil) {
+        updateData.availableUntil = availableUntil;
+      }
+      if (tag) {
+        updateData.tag = tag;
+      } else {
+        updateData.tag = null; // Clear if not selected
+      }
+    } else {
+      // If setting to occupied or closed, always clear the tag!
+      updateData.tag = null;
     }
 
     await updateDoc(seatRef, updateData);

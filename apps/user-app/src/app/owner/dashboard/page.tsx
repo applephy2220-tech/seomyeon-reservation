@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { db } from '@shared/firebase/clientApp';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
-import { Reservation, SeatStatus } from '@shared/types';
+import { Seat, Reservation, SeatStatus } from '@shared/types';
 import { useRealtimeVenues } from '@shared/hooks/useRealtimeVenues';
 import { useRealtimeSeats } from '@shared/hooks/useRealtimeSeats';
 import { changeSeatStatus, verifyVisitCodeTransaction } from '@shared/firebase/owner';
@@ -83,6 +83,11 @@ export default function OwnerDashboardPage() {
   // Seat state mutation loading indicator map
   const [seatMutatingId, setSeatMutatingId] = useState<string | null>(null);
 
+  // Advanced Seating Open Modal States
+  const [openModalSeat, setOpenModalSeat] = useState<Seat | null>(null);
+  const [selectedDuration, setSelectedDuration] = useState<number>(60); // Default 60 minutes
+  const [selectedTag, setSelectedTag] = useState<string>(''); // Default no tag
+
   const handleKeyPress = (val: string) => {
     if (checkingIn) return;
     
@@ -130,13 +135,44 @@ export default function OwnerDashboardPage() {
     }
   };
 
-  const handleSeatStatusChange = async (seatId: string, newStatus: SeatStatus) => {
+  const handleSeatClickOpen = (seat: Seat) => {
+    setOpenModalSeat(seat);
+    setSelectedTag(`${seat.capacity}인석 바로 입장`);
+    setSelectedDuration(60); // Default to 1 hour
+  };
+
+  const handleSeatDirectStatusChange = async (seatId: string, newStatus: SeatStatus) => {
     setSeatMutatingId(seatId);
     try {
       await changeSeatStatus(seatId, newStatus);
     } catch (err) {
       console.error(err);
       alert('좌석 상태 변경에 실패했습니다.');
+    } finally {
+      setSeatMutatingId(null);
+    }
+  };
+
+  const handleConfirmOpenSeat = async () => {
+    if (!openModalSeat) return;
+
+    setSeatMutatingId(openModalSeat.id);
+    try {
+      const now = new Date();
+      const expiry = new Date(now.getTime() + selectedDuration * 60 * 1000);
+      const availableUntil = expiry.toISOString();
+
+      await changeSeatStatus(
+        openModalSeat.id,
+        'available',
+        availableUntil,
+        selectedTag || undefined
+      );
+
+      setOpenModalSeat(null);
+    } catch (err) {
+      console.error(err);
+      alert('좌석 개방 설정에 실패했습니다.');
     } finally {
       setSeatMutatingId(null);
     }
@@ -341,25 +377,43 @@ export default function OwnerDashboardPage() {
                     </div>
 
                     {/* Touch Action Status controllers */}
+                    {/* Touch Action Status controllers */}
                     <div className="flex gap-1.5 self-end sm:self-center">
-                      {[
-                        { id: 'available', name: '열기', color: 'hover:bg-emerald-500 hover:text-black border-emerald-950/40 text-emerald-500/80 bg-emerald-950/10' },
-                        { id: 'occupied', name: '점유', color: 'hover:bg-zinc-700 hover:text-white border-zinc-800 text-zinc-400 bg-zinc-900/20' },
-                        { id: 'closed', name: '마감', color: 'hover:bg-red-500 hover:text-black border-red-950/30 text-red-500/80 bg-red-950/10' }
-                      ].map((item) => (
-                        <button
-                          key={item.id}
-                          onClick={() => handleSeatStatusChange(seat.id, item.id as SeatStatus)}
-                          disabled={seatMutatingId === seat.id || seat.status === 'locked'}
-                          className={`px-3 py-1.5 rounded-lg border text-[10px] font-black transition-all ${item.color} ${
-                            seat.status === item.id 
-                              ? 'bg-zinc-800 text-white border-purple-500/30 pointer-events-none ring-1 ring-purple-500/20' 
-                              : ''
-                          } disabled:opacity-30 disabled:cursor-not-allowed`}
-                        >
-                          {item.name}
-                        </button>
-                      ))}
+                      <button
+                        onClick={() => handleSeatClickOpen(seat)}
+                        disabled={seatMutatingId === seat.id || seat.status === 'locked'}
+                        className={`px-3 py-1.5 rounded-lg border text-[10px] font-black transition-all hover:bg-emerald-500 hover:text-black border-emerald-950/40 text-emerald-500/80 bg-emerald-950/10 ${
+                          seat.status === 'available' 
+                            ? 'bg-zinc-800 text-white border-purple-500/30 pointer-events-none ring-1 ring-purple-500/20' 
+                            : ''
+                        } disabled:opacity-30 disabled:cursor-not-allowed`}
+                      >
+                        열기
+                      </button>
+
+                      <button
+                        onClick={() => handleSeatDirectStatusChange(seat.id, 'occupied')}
+                        disabled={seatMutatingId === seat.id || seat.status === 'locked'}
+                        className={`px-3 py-1.5 rounded-lg border text-[10px] font-black transition-all hover:bg-zinc-700 hover:text-white border-zinc-800 text-zinc-400 bg-zinc-900/20 ${
+                          seat.status === 'occupied' 
+                            ? 'bg-zinc-800 text-white border-purple-500/30 pointer-events-none ring-1 ring-purple-500/20' 
+                            : ''
+                        } disabled:opacity-30 disabled:cursor-not-allowed`}
+                      >
+                        점유
+                      </button>
+
+                      <button
+                        onClick={() => handleSeatDirectStatusChange(seat.id, 'closed')}
+                        disabled={seatMutatingId === seat.id || seat.status === 'locked'}
+                        className={`px-3 py-1.5 rounded-lg border text-[10px] font-black transition-all hover:bg-red-500 hover:text-black border-red-950/30 text-red-500/80 bg-red-950/10 ${
+                          seat.status === 'closed' 
+                            ? 'bg-zinc-800 text-white border-purple-500/30 pointer-events-none ring-1 ring-purple-500/20' 
+                            : ''
+                        } disabled:opacity-30 disabled:cursor-not-allowed`}
+                      >
+                        마감
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -441,6 +495,103 @@ export default function OwnerDashboardPage() {
           )}
         </div>
       </section>
+
+      {/* 5. Seating Tag & Duration Modal Dialog */}
+      {openModalSeat && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/85 backdrop-blur-md animate-fadeIn">
+          <div className="w-full max-w-sm p-6 rounded-3xl bg-zinc-900 border border-purple-500/30 shadow-[0_0_30px_rgba(168,85,247,0.15)] space-y-5">
+            <div className="flex justify-between items-start">
+              <div>
+                <span className="text-[9px] font-bold text-purple-400 uppercase tracking-widest bg-purple-950/40 px-2 py-0.5 rounded border border-purple-500/20">
+                  SEATING ENHANCEMENT
+                </span>
+                <h4 className="text-base font-black text-white mt-1.5">[{openModalSeat.label}] 빈자리 개방 설정</h4>
+              </div>
+              <button 
+                onClick={() => setOpenModalSeat(null)}
+                className="p-1 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-400 hover:text-white"
+              >
+                <XCircle className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Duration Selector */}
+            <div className="space-y-2">
+              <label className="text-[10px] font-black tracking-wider text-zinc-500 uppercase block">이용 제한시간 설정</label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { value: 30, label: '30분' },
+                  { value: 60, label: '1시간' },
+                  { value: 120, label: '2시간' },
+                  { value: 180, label: '3시간' },
+                  { value: 720, label: '무제한' }
+                ].map((d) => (
+                  <button
+                    key={d.value}
+                    onClick={() => setSelectedDuration(d.value)}
+                    type="button"
+                    className={`py-2 rounded-xl border text-[11px] font-black transition-all ${
+                      selectedDuration === d.value
+                        ? 'bg-purple-950/30 border-purple-500 text-purple-400 shadow-[0_0_10px_rgba(168,85,247,0.1)]'
+                        : 'bg-zinc-950 border-zinc-850 text-zinc-400 hover:border-zinc-800'
+                    }`}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Recommendation Tags Selector */}
+            <div className="space-y-2">
+              <label className="text-[10px] font-black tracking-wider text-zinc-500 uppercase block">실시간 추천 문구 지정 (선택)</label>
+              <div className="space-y-2">
+                {[
+                  '30분 내 방문 가능',
+                  `${openModalSeat.capacity}인석 바로 입장`,
+                  '오늘만 서비스 제공',
+                  '' // None
+                ].map((tag) => (
+                  <button
+                    key={tag}
+                    onClick={() => setSelectedTag(tag)}
+                    type="button"
+                    className={`w-full py-2.5 px-4 rounded-xl border text-left text-[11px] font-bold transition-all flex items-center justify-between ${
+                      selectedTag === tag
+                        ? 'bg-purple-950/20 border-purple-500 text-white shadow-[0_0_10px_rgba(168,85,247,0.05)]'
+                        : 'bg-zinc-950 border-zinc-850 text-zinc-500 hover:border-zinc-800'
+                    }`}
+                  >
+                    <span>{tag === '' ? '💡 선택 안 함 (기본)' : `✨ ${tag}`}</span>
+                    {selectedTag === tag && (
+                      <div className="w-2 h-2 rounded-full bg-purple-500 shadow-[0_0_6px_rgba(168,85,247,0.8)]" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* CTAs */}
+            <div className="pt-2 flex gap-3">
+              <button
+                onClick={() => setOpenModalSeat(null)}
+                type="button"
+                className="flex-1 py-3 rounded-xl bg-zinc-950 border border-zinc-850 text-xs font-bold text-zinc-500 hover:text-white transition-colors"
+              >
+                닫기
+              </button>
+              <button
+                onClick={handleConfirmOpenSeat}
+                disabled={seatMutatingId === openModalSeat.id}
+                type="button"
+                className="flex-[2] py-3 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 text-xs font-black text-white hover:brightness-110 shadow-[0_0_15px_rgba(168,85,247,0.3)] transition-all flex items-center justify-center gap-1.5"
+              >
+                <span>빈자리 개방 확정</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Floating Sparkle indicator inside Owner Page */}
       <div className="fixed bottom-6 right-6 z-50">
