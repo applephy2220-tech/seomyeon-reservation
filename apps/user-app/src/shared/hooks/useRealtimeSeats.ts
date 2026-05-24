@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { db } from '../firebase/clientApp';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { Seat } from '../types';
@@ -14,20 +14,19 @@ export const useRealtimeSeats = (options: UseRealtimeSeatsOptions = {}) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
 
+  // Destructure primitives to keep dependency checks stable and clean
+  const { venueId, onlyAvailable } = options;
+
   useEffect(() => {
     setLoading(true);
     const seatsCol = collection(db, 'seats');
     
     // Dynamically build firestore query constraints
     const constraints = [];
-    if (options.venueId) {
-      constraints.push(where('venueId', '==', options.venueId));
+    if (venueId) {
+      constraints.push(where('venueId', '==', venueId));
     }
     
-    // Note: Instead of doing status == 'available' on the database level, 
-    // we query all matching seats (or all seats for a venue) and filter locked/available on client side.
-    // This allows active client subscriptions to automatically detect expired locked seats 
-    // and trigger self-healing rollbacks!
     const q = constraints.length > 0 ? query(seatsCol, ...constraints) : query(seatsCol);
 
     const unsubscribe = onSnapshot(
@@ -55,9 +54,9 @@ export const useRealtimeSeats = (options: UseRealtimeSeatsOptions = {}) => {
           seatsData.push(seat);
         });
 
-        // Filter based on options.onlyAvailable on the client-side
+        // Filter based on onlyAvailable on the client-side
         let filteredSeats = seatsData;
-        if (options.onlyAvailable) {
+        if (onlyAvailable) {
           filteredSeats = seatsData.filter(s => s.status === 'available');
         }
         
@@ -75,32 +74,50 @@ export const useRealtimeSeats = (options: UseRealtimeSeatsOptions = {}) => {
     );
 
     return () => unsubscribe();
-  }, [options.venueId, options.onlyAvailable]);
+  }, [venueId, onlyAvailable]);
+
+  // Keep a mutable ref to the latest seats so our interval can check expiration
+  // without re-creating the interval when seats state updates.
+  const seatsRef = useRef<Seat[]>(seats);
+  useEffect(() => {
+    seatsRef.current = seats;
+  }, [seats]);
+
+  // Keep track of locked seats currently in the process of being released
+  const releasingSeatIdsRef = useRef<Set<string>>(new Set());
 
   // Periodic interval client-side cleanup check (every 5 seconds) 
   // to ensure active countdown items trigger UI changes even if Firestore doesn't stream updates
   useEffect(() => {
     const timer = setInterval(() => {
-      setSeats((prevSeats) => {
-        const now = new Date();
-        let changed = false;
+      const now = new Date();
+      const currentSeats = seatsRef.current;
 
-        const updated = prevSeats.map((seat) => {
-          const isLockExpired = 
-            seat.status === 'locked' && 
-            seat.lockExpiresAt && 
-            new Date(seat.lockExpiresAt).getTime() < now.getTime();
+      currentSeats.forEach((seat) => {
+        const isLockExpired = 
+          seat.status === 'locked' && 
+          seat.lockExpiresAt && 
+          new Date(seat.lockExpiresAt).getTime() < now.getTime();
 
-          if (isLockExpired) {
-            changed = true;
-            // Revert status in local state first, and fire async cleanup
-            releaseSeat(seat.id).catch(err => console.error('Interval auto release failed:', err));
-            return { ...seat, status: 'available' as const };
-          }
-          return seat;
-        });
+        if (isLockExpired) {
+          // If already releasing, skip to avoid duplicate database requests
+          if (releasingSeatIdsRef.current.has(seat.id)) return;
 
-        return changed ? updated : prevSeats;
+          console.log(`Self-healing lock check: Seat ${seat.id} is expired. Releasing...`);
+          releasingSeatIdsRef.current.add(seat.id);
+
+          // Decouple side effects from React render/state updater loop!
+          // releaseSeat will write to Firestore, which naturally triggers onSnapshot and updates the state.
+          releaseSeat(seat.id)
+            .then(() => {
+              // Successfully updated, clean up ref
+              releasingSeatIdsRef.current.delete(seat.id);
+            })
+            .catch((err) => {
+              console.error('Interval auto release failed:', err);
+              releasingSeatIdsRef.current.delete(seat.id);
+            });
+        }
       });
     }, 5000);
 
@@ -109,4 +126,5 @@ export const useRealtimeSeats = (options: UseRealtimeSeatsOptions = {}) => {
 
   return { seats, loading, error };
 };
+
 export default useRealtimeSeats;

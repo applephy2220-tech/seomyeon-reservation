@@ -7,7 +7,7 @@ import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { Seat, Reservation, SeatStatus } from '@shared/types';
 import { useRealtimeVenues } from '@shared/hooks/useRealtimeVenues';
 import { useRealtimeSeats } from '@shared/hooks/useRealtimeSeats';
-import { changeSeatStatus, verifyVisitCodeTransaction } from '@shared/firebase/owner';
+import { changeSeatStatus, verifyVisitCodeTransaction, cancelReservationAsNoShow } from '@shared/firebase/owner';
 import { LoadingSpinner } from '@shared/components/LoadingSpinner';
 import { 
   Building, 
@@ -74,6 +74,56 @@ export default function OwnerDashboardPage() {
 
     return () => unsubscribe();
   }, [selectedVenueId]);
+
+  // Background loop: check for expired (no-show) reservations (> 30 mins elapsed)
+  // We use a ref to prevent recreating setInterval when reservations state updates.
+  const reservationsRef = React.useRef<Reservation[]>(reservations);
+  React.useEffect(() => {
+    reservationsRef.current = reservations;
+  }, [reservations]);
+
+  // Keep track of processing reservation IDs to prevent redundant trigger loops
+  const processingNoShowIdsRef = React.useRef<Set<string>>(new Set());
+
+  React.useEffect(() => {
+    const timer = setInterval(() => {
+      const now = new Date();
+      const currentReservations = reservationsRef.current;
+
+      currentReservations.forEach((item) => {
+        // Only target active 'confirmed' status
+        if (item.status !== 'confirmed') return;
+
+        // If it's already in processing list, skip to avoid double updates
+        if (processingNoShowIdsRef.current.has(item.id)) return;
+
+        try {
+          const visitTime = new Date(item.visitTime);
+          const diffMs = now.getTime() - visitTime.getTime();
+          const thirtyMinutes = 30 * 60 * 1000;
+
+          if (diffMs > thirtyMinutes) {
+            console.log(`Auto No-Show Check: Reservation ${item.id} is past the 30-min threshold. Canceling...`);
+            
+            // Mark as processing
+            processingNoShowIdsRef.current.add(item.id);
+
+            // Execute transactional atomic cancel
+            cancelReservationAsNoShow(item.id, item.seatId)
+              .catch((err) => {
+                console.error(`Auto no-show cancellation failed for ${item.id}:`, err);
+                // On error, remove it from processing list so it can retry later
+                processingNoShowIdsRef.current.delete(item.id);
+              });
+          }
+        } catch (err) {
+          console.error(`Failed to process no-show calculation for ${item.id}:`, err);
+        }
+      });
+    }, 10000); // Check every 10 seconds
+
+    return () => clearInterval(timer);
+  }, []);
 
   // Visit PIN code input state
   const [pinCode, setPinCode] = useState<string>('');
@@ -476,9 +526,11 @@ export default function OwnerDashboardPage() {
                             ? 'text-purple-400 border-purple-500/20 bg-purple-950/20 shadow-[0_0_8px_rgba(168,85,247,0.05)]'
                             : item.status === 'used'
                             ? 'text-emerald-400 border-emerald-500/20 bg-emerald-950/20'
+                            : item.status === 'noshow_expired'
+                            ? 'text-amber-400 border-amber-500/20 bg-amber-950/20'
                             : 'text-zinc-500 border-zinc-850 bg-zinc-900/30'
                         }`}>
-                          {item.status === 'confirmed' ? '입장 대기' : item.status === 'used' ? '입장 완료' : '예약 취소'}
+                          {item.status === 'confirmed' ? '입장 대기' : item.status === 'used' ? '입장 완료' : item.status === 'noshow_expired' ? '노쇼 마감' : '예약 취소'}
                         </span>
                       </td>
                     </tr>

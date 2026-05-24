@@ -144,3 +144,49 @@ export const verifyVisitCodeTransaction = async (
     };
   }
 };
+
+/**
+ * 3. Owner Action: Automatically transition a reservation to 'noshow_expired' and free up the seat.
+ * Atomically checks status before modifying to prevent race conditions.
+ */
+export const cancelReservationAsNoShow = async (
+  reservationId: string,
+  seatId: string
+): Promise<void> => {
+  const resRef = doc(db, 'reservations', reservationId);
+  const seatRef = doc(db, 'seats', seatId);
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const resSnap = await transaction.get(resRef);
+      if (!resSnap.exists()) return;
+
+      const resData = resSnap.data() as Reservation;
+      if (resData.status !== 'confirmed') {
+        // Already updated by another client or action!
+        return;
+      }
+
+      // Atomically update reservation to 'noshow_expired'
+      transaction.update(resRef, {
+        status: 'noshow_expired',
+        updatedAt: Timestamp.now()
+      });
+
+      // Revert associated seat to available
+      transaction.update(seatRef, {
+        status: 'available',
+        currentReservationId: null,
+        lockedBy: null,
+        lockedAt: null,
+        lockExpiresAt: null,
+        updatedAt: Timestamp.now()
+      });
+    });
+    console.log(`Reservation ${reservationId} successfully canceled as no-show.`);
+  } catch (error) {
+    console.error(`cancelReservationAsNoShow failed for reservation ${reservationId}:`, error);
+    throw error;
+  }
+};
+

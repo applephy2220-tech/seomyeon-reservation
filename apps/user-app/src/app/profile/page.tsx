@@ -237,9 +237,11 @@ export default function ProfilePage() {
                     <span className={`text-[8px] font-bold tracking-wider px-1.5 py-0.5 rounded ${
                       item.status === 'canceled' 
                         ? 'text-red-500/50 bg-red-950/10' 
+                        : item.status === 'noshow_expired'
+                        ? 'text-amber-500/50 bg-amber-950/10'
                         : 'text-zinc-500 bg-zinc-900'
                     }`}>
-                      {item.status === 'canceled' ? '취소됨' : '방문 완료'}
+                      {item.status === 'canceled' ? '취소됨' : item.status === 'noshow_expired' ? '노쇼 마감' : '방문 완료'}
                     </span>
                   </div>
                   

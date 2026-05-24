@@ -43,7 +43,7 @@ export interface Reservation {
   seatId: string;
   venueName: string;
   seatLabel: string;
-  status: 'confirmed' | 'used' | 'canceled';
+  status: 'confirmed' | 'used' | 'canceled' | 'noshow_expired';
   visitTime: string;
   expiresAt: string;
   paymentAmount: number;
