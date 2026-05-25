@@ -10,7 +10,7 @@ import {
   getDocs, 
   limit 
 } from 'firebase/firestore';
-import { SeatStatus, Reservation } from '../types';
+import { SeatStatus, Reservation, Seat } from '../types';
 
 /**
  * 1. Owner Action: Directly change a seat's status
@@ -23,39 +23,58 @@ export const changeSeatStatus = async (
 ): Promise<void> => {
   const seatRef = doc(db, 'seats', seatId);
   try {
-    const updateData: Record<string, unknown> = {
-      status,
-      updatedAt: Timestamp.now()
-    };
-
-    // If reverting to available, closed, or occupied, clear active lock metadata
-    if (status === 'available' || status === 'closed' || status === 'occupied') {
-      updateData.lockedBy = null;
-      updateData.lockedAt = null;
-      updateData.lockExpiresAt = null;
-    }
-
-    // If freeing up the seat, sever active reservation association pointers
-    if (status === 'available' || status === 'closed') {
-      updateData.currentReservationId = null;
-    }
-
-    // Advanced Owner control: set custom duration and glowing tag if opening up
-    if (status === 'available') {
-      if (availableUntil) {
-        updateData.availableUntil = availableUntil;
+    await runTransaction(db, async (transaction) => {
+      const seatDoc = await transaction.get(seatRef);
+      if (!seatDoc.exists()) {
+        throw new Error('좌석이 존재하지 않습니다.');
       }
-      if (tag) {
-        updateData.tag = tag;
+
+      const seatData = seatDoc.data() as Seat;
+      const updateData: Record<string, unknown> = {
+        status,
+        updatedAt: Timestamp.now()
+      };
+
+      // If reverting to available, closed, or occupied, clear active lock metadata
+      if (status === 'available' || status === 'closed' || status === 'occupied') {
+        updateData.lockedBy = null;
+        updateData.lockedAt = null;
+        updateData.lockExpiresAt = null;
+      }
+
+      // If freeing up the seat, sever active reservation association pointers
+      if (status === 'available' || status === 'closed') {
+        updateData.currentReservationId = null;
+      }
+
+      // Advanced Owner control: set custom duration and glowing tag if opening up
+      if (status === 'available') {
+        if (availableUntil) {
+          updateData.availableUntil = availableUntil;
+        }
+        if (tag) {
+          updateData.tag = tag;
+        } else {
+          updateData.tag = null; // Clear if not selected
+        }
       } else {
-        updateData.tag = null; // Clear if not selected
-      }
-    } else {
-      // If setting to occupied or closed, always clear the tag!
-      updateData.tag = null;
-    }
+        // If setting to occupied or closed, always clear the tag!
+        updateData.tag = null;
 
-    await updateDoc(seatRef, updateData);
+        // If setting to occupied or closed, and there is an active deal, cancel the deal atomically!
+        if (seatData.activeDealId) {
+          const dealRef = doc(db, 'deals', seatData.activeDealId);
+          transaction.update(dealRef, {
+            status: 'cancelled',
+            updatedAt: Timestamp.now()
+          });
+          updateData.activeDealId = null;
+        }
+      }
+
+      transaction.update(seatRef, updateData);
+    });
+
     console.log(`Seat ${seatId} successfully updated to status: ${status}`);
   } catch (error) {
     console.error(`changeSeatStatus failed for seat ${seatId}:`, error);

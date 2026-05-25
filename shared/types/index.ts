@@ -24,8 +24,9 @@ export interface Seat {
   lockedAt?: string; // ISO String when the seat was locked
   lockExpiresAt?: string; // ISO String when the lock expires (lockedAt + 5 min)
   lockedBy?: string; // UID of the user who locked it
-  currentReservationId?: string; // ID of the confirmed reservation
+  currentReservationId?: string | null; // ID of the confirmed reservation
   tag?: string; // Glowing recommendation tags
+  activeDealId?: string | null; // Currently active linked deal ID
 }
 
 export interface UserProfile {
@@ -49,4 +50,18 @@ export interface Reservation {
   paymentAmount: number;
   visitCode: string; // 4-digit random number (e.g. "8219")
   createdAt: unknown;
+  dealId?: string | null; // Relational link to the applied deal
+}
+
+export interface Deal {
+  id: string;
+  venueId: string;
+  seatId: string;
+  title: string;
+  description: string;
+  benefitType: 'service' | 'discount' | 'time_limit';
+  benefitValue: string;
+  validUntil: string; // ISO Date String
+  status: 'active' | 'expired' | 'cancelled' | 'sold_out';
+  createdAt: unknown; // Firestore Timestamp or ISO String
 }

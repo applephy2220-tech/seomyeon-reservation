@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useRealtimeVenueDetail } from '@shared/hooks/useRealtimeVenues';
 import { useRealtimeSeats } from '@shared/hooks/useRealtimeSeats';
+import { useRealtimeDeals } from '@shared/firebase/deals';
 import { SeatCard } from '@shared/components/SeatCard';
 import { LoadingSpinner } from '@shared/components/LoadingSpinner';
 import { BottomNavigation } from '@shared/components/BottomNavigation';
@@ -70,6 +71,12 @@ export default function VenueDetailPage({ params }: VenuePageProps) {
   const { venue, loading: venueLoading } = useRealtimeVenueDetail(venueId);
   const { seats, loading: seatsLoading } = useRealtimeSeats({ venueId });
   const { seats: globalAvailableSeats } = useRealtimeSeats({ onlyAvailable: true });
+  const { deals: activeDeals } = useRealtimeDeals({ venueId, onlyActive: true });
+
+  const getDealBenefitForSeat = (seatId: string) => {
+    const matched = activeDeals.find(d => d.seatId === seatId);
+    return matched ? matched.benefitValue : undefined;
+  };
 
   const [reserveLoadingId, setReserveLoadingId] = useState<string | null>(null);
   const [successDialog, setSuccessDialog] = useState<{ label: string } | null>(null);
@@ -113,8 +120,16 @@ export default function VenueDetailPage({ params }: VenuePageProps) {
     );
   }
 
-  // Group seats by statuses for clear UI layout
-  const availableSeats = seats.filter(s => s.status === 'available');
+  // Group seats by statuses for clear UI layout and prioritize seats with active deals first
+  const availableSeats = seats
+    .filter(s => s.status === 'available')
+    .sort((a, b) => {
+      const aHasDeal = !!a.activeDealId;
+      const bHasDeal = !!b.activeDealId;
+      if (aHasDeal && !bHasDeal) return -1;
+      if (!aHasDeal && bHasDeal) return 1;
+      return 0;
+    });
   const otherSeats = seats.filter(s => s.status !== 'available');
 
   const placeholder = getCategoryPlaceholder(venue.category);
@@ -206,6 +221,7 @@ export default function VenueDetailPage({ params }: VenuePageProps) {
                 seat={seat} 
                 onReserve={handleReserveSeat}
                 isReserving={reserveLoadingId === seat.id}
+                dealBenefitValue={getDealBenefitForSeat(seat.id)}
               />
             ))}
           </div>
@@ -233,6 +249,7 @@ export default function VenueDetailPage({ params }: VenuePageProps) {
               <SeatCard 
                 key={seat.id} 
                 seat={seat}
+                dealBenefitValue={getDealBenefitForSeat(seat.id)}
               />
             ))}
           </div>

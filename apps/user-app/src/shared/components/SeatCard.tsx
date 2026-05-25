@@ -8,13 +8,15 @@ interface SeatCardProps {
   venueName?: string;
   onReserve?: (seat: Seat) => void;
   isReserving?: boolean;
+  dealBenefitValue?: string;
 }
 
 export const SeatCard: React.FC<SeatCardProps> = ({
   seat,
   venueName,
   onReserve,
-  isReserving = false
+  isReserving = false,
+  dealBenefitValue
 }) => {
   const { label, capacity, status, availableUntil } = seat;
 
@@ -43,7 +45,9 @@ export const SeatCard: React.FC<SeatCardProps> = ({
   const getBorderColor = (status: SeatStatus) => {
     switch (status) {
       case 'available':
-        return 'border-emerald-500/30 hover:border-emerald-500/60 shadow-[0_0_15px_rgba(16,185,129,0.03)] hover:shadow-[0_0_20px_rgba(16,185,129,0.1)]';
+        return seat.activeDealId
+          ? 'border-orange-500/40 hover:border-orange-500/70 shadow-[0_0_15px_rgba(249,115,22,0.06)] hover:shadow-[0_0_20px_rgba(249,115,22,0.15)] bg-orange-950/5'
+          : 'border-emerald-500/30 hover:border-emerald-500/60 shadow-[0_0_15px_rgba(16,185,129,0.03)] hover:shadow-[0_0_20px_rgba(16,185,129,0.1)]';
       case 'locked':
         return 'border-amber-500/20 opacity-80';
       case 'reserved':
@@ -70,14 +74,19 @@ export const SeatCard: React.FC<SeatCardProps> = ({
           {/* Seat Label */}
           <h4 className="text-base font-bold text-white tracking-tight flex items-center flex-wrap gap-1.5">
             {label}
-            {status === 'available' && (
+            {status === 'available' && !seat.activeDealId && (
               <span className="inline-flex items-center gap-0.5 rounded bg-emerald-950/50 px-1 py-0.5 text-[10px] font-medium text-emerald-400 border border-emerald-500/20">
                 <Flame className="w-2.5 h-2.5" />
                 추천
               </span>
             )}
+            {status === 'available' && seat.activeDealId && (
+              <span className="inline-flex items-center gap-0.5 rounded bg-orange-950/70 border border-orange-500/40 px-1.5 py-0.5 text-[9px] font-black text-orange-400 shadow-[0_0_8px_rgba(249,115,22,0.3)] animate-pulse">
+                🔥 딜: {dealBenefitValue || '초긴급 혜택'}
+              </span>
+            )}
             {status === 'available' && seat.tag && (
-              <span className="inline-flex items-center gap-0.5 rounded bg-purple-950/60 border border-purple-500/30 px-1.5 py-0.5 text-[9px] font-black text-purple-400 shadow-[0_0_8px_rgba(168,85,247,0.15)] animate-pulse">
+              <span className="inline-flex items-center gap-0.5 rounded bg-purple-950/60 border border-purple-500/30 px-1.5 py-0.5 text-[9px] font-black text-purple-400 shadow-[0_0_8px_rgba(168,85,247,0.15)]">
                 ✨ {seat.tag}
               </span>
             )}

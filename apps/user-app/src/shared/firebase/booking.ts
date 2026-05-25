@@ -6,7 +6,7 @@ import {
   updateDoc, 
   Timestamp 
 } from 'firebase/firestore';
-import { Seat, Reservation } from '../types';
+import { Seat, Reservation, Deal } from '../types';
 
 /**
  * 1. Firestore Transaction to safely lock a seat for 5 minutes
@@ -87,7 +87,8 @@ export const confirmMockPaymentTransaction = async (
   venueId: string,
   venueName: string,
   seatLabel: string,
-  userId: string
+  userId: string,
+  dealId?: string | null
 ): Promise<{ success: boolean; reservationId?: string; message: string }> => {
   const seatRef = doc(db, 'seats', seatId);
   const reservationsCol = collection(db, 'reservations');
@@ -115,6 +116,31 @@ export const confirmMockPaymentTransaction = async (
         throw new Error('예약 선점 세션이 만료되었거나 올바르지 않습니다.');
       }
 
+      // If a deal is attached, verify and update the deal document atomically
+      if (dealId) {
+        const dealRef = doc(db, 'deals', dealId);
+        const dealDoc = await transaction.get(dealRef);
+        if (!dealDoc.exists()) {
+          throw new Error('연동된 긴급딜 정보를 찾을 수 없습니다.');
+        }
+        const dealData = dealDoc.data() as Deal;
+        if (dealData.status !== 'active' || (dealData.remainingSlots !== undefined && dealData.remainingSlots <= 0)) {
+          throw new Error('이 긴급딜은 이미 판매 완료되었거나 만료되었습니다.');
+        }
+
+        const newUsedSlots = (dealData.usedSlots || 0) + 1;
+        const newRemainingSlots = Math.max(0, (dealData.totalSlots || 1) - newUsedSlots);
+        const isNowSoldOut = newRemainingSlots <= 0;
+
+        // Update Deal slots and set sold_out status atomically
+        transaction.update(dealRef, {
+          usedSlots: newUsedSlots,
+          remainingSlots: newRemainingSlots,
+          status: isNowSoldOut ? 'sold_out' : 'active',
+          updatedAt: Timestamp.now()
+        });
+      }
+
       // Generate a 4-digit random visit verification code
       const visitCode = Math.floor(1000 + Math.random() * 9000).toString();
       
@@ -134,17 +160,18 @@ export const confirmMockPaymentTransaction = async (
         expiresAt,
         paymentAmount: 5000,
         visitCode,
-        createdAt: Timestamp.now()
+        createdAt: Timestamp.now(),
+        dealId: dealId || null
       };
 
-      // Atomic Writes
-      // A. Create the reservation record
+      // B. Create the reservation record
       transaction.set(newReservationDocRef, reservationData);
 
-      // B. Update the seat status and current reservation ID
+      // C. Update the seat status, current reservation ID, and activeDealId link
       transaction.update(seatRef, {
         status: 'reserved',
         currentReservationId: reservationId,
+        activeDealId: null,
         lockedBy: null,
         lockedAt: null,
         lockExpiresAt: null,

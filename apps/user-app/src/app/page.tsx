@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useRealtimeVenues } from '@shared/hooks/useRealtimeVenues';
 import { useRealtimeSeats } from '@shared/hooks/useRealtimeSeats';
+import { useRealtimeDeals } from '@shared/firebase/deals';
 import { VenueCard } from '@shared/components/VenueCard';
 import { SeatCard } from '@shared/components/SeatCard';
 import { LoadingSpinner } from '@shared/components/LoadingSpinner';
@@ -20,14 +21,47 @@ import {
   ArrowRight,
   TrendingUp,
   CheckCircle2,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Zap,
+  Timer
 } from 'lucide-react';
+
+const DealCountdown = ({ validUntil }: { validUntil: string }) => {
+  const [timeLeft, setTimeLeft] = React.useState('');
+
+  React.useEffect(() => {
+    const calculateTime = () => {
+      const now = new Date();
+      const target = new Date(validUntil);
+      const diffMs = target.getTime() - now.getTime();
+      if (diffMs <= 0) {
+        setTimeLeft('만료됨');
+        return;
+      }
+      const mins = Math.floor(diffMs / 1000 / 60);
+      const secs = Math.floor((diffMs / 1000) % 60);
+      setTimeLeft(`${mins}:${secs.toString().padStart(2, '0')}`);
+    };
+
+    calculateTime();
+    const interval = setInterval(calculateTime, 1000);
+    return () => clearInterval(interval);
+  }, [validUntil]);
+
+  return (
+    <span className="flex items-center gap-1 text-[10px] font-black text-orange-400 bg-orange-950/50 border border-orange-500/20 px-2 py-0.5 rounded shadow-[0_0_6px_rgba(249,115,22,0.2)]">
+      <Timer className="w-3 h-3 text-orange-500 animate-pulse" />
+      {timeLeft}
+    </span>
+  );
+};
 
 export default function HomePage() {
   const router = useRouter();
   // 1. Subscribe to real-time collections
   const { venues, loading: venuesLoading } = useRealtimeVenues();
   const { seats: availableSeats, loading: seatsLoading } = useRealtimeSeats({ onlyAvailable: true });
+  const { deals: activeDeals } = useRealtimeDeals({ onlyActive: true });
 
   // UI State
   const [searchTerm, setSearchTerm] = useState('');
@@ -72,6 +106,12 @@ export default function HomePage() {
   const getVenueName = (venueId: string) => {
     const matched = venues.find(v => v.id === venueId);
     return matched ? matched.name : '서면 술집';
+  };
+
+  // Helper: map seat to its active deal benefit
+  const getDealBenefitForSeat = (seatId: string) => {
+    const matched = activeDeals.find(d => d.seatId === seatId);
+    return matched ? matched.benefitValue : undefined;
   };
 
   // Helper: calculate empty vacancy dynamically for a venue
@@ -160,6 +200,84 @@ export default function HomePage() {
         </section>
       )}
 
+      {/* Emergency Deals Section */}
+      {activeDeals.length > 0 && (
+        <section className="px-6 mt-4 relative z-10 animate-fadeIn">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-black tracking-widest text-orange-400 uppercase flex items-center gap-1.5 animate-pulse">
+              <Zap className="w-4 h-4 text-orange-500 animate-bounce" />
+              🔥 지금 뜬 서면 긴급딜! ({activeDeals.length})
+            </h3>
+            <span className="text-[9px] font-bold text-zinc-550 uppercase">TIME LIMITED</span>
+          </div>
+
+          <div className="flex gap-4 overflow-x-auto pb-3 scrollbar-none snap-x snap-mandatory">
+            {activeDeals.map((deal) => {
+              const matchedVenue = venues.find(v => v.id === deal.venueId);
+              const matchedSeat = availableSeats.find(s => s.id === deal.seatId);
+              
+              if (!matchedSeat) return null;
+
+              const timeRemainingMs = new Date(deal.validUntil).getTime() - Date.now();
+              const isUrgent = timeRemainingMs > 0 && timeRemainingMs < 10 * 60 * 1000;
+
+              return (
+                <div 
+                  key={deal.id} 
+                  onClick={() => router.push(`/venue/${deal.venueId}`)}
+                  className={`w-[300px] flex-shrink-0 snap-start p-4 rounded-2xl border relative overflow-hidden flex flex-col justify-between cursor-pointer transition-all duration-300 ${
+                    isUrgent 
+                      ? 'bg-gradient-to-tr from-red-950/20 via-zinc-950/95 to-orange-950/10 border-red-500/70 shadow-[0_0_20px_rgba(239,68,68,0.25)] hover:border-red-500 hover:shadow-[0_0_25px_rgba(239,68,68,0.4)]' 
+                      : 'bg-gradient-to-tr from-orange-950/25 via-zinc-950/95 to-amber-950/10 border-orange-550/30 shadow-[0_0_15px_rgba(249,115,22,0.15)] hover:border-orange-500/60'
+                  }`}
+                >
+                  <div className="absolute top-[-30px] right-[-30px] w-24 h-24 bg-orange-500/10 blur-[25px] rounded-full pointer-events-none"></div>
+                  
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[9px] font-extrabold text-orange-400 uppercase tracking-widest bg-orange-950/60 px-2 py-0.5 rounded border border-orange-500/20">
+                        {matchedVenue?.category || '핫플레이스'} • {matchedVenue?.name || '서면 술집'}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        {isUrgent && (
+                          <span className="inline-flex items-center rounded bg-red-950/80 border border-red-500/40 px-1.5 py-0.5 text-[8px] font-black text-red-400 animate-pulse shadow-[0_0_6px_rgba(239,68,68,0.2)]">
+                            🚨 마감 임박
+                          </span>
+                        )}
+                        <DealCountdown validUntil={deal.validUntil} />
+                      </div>
+                    </div>
+
+                    <h4 className="text-sm font-extrabold text-white tracking-tight mt-1">{deal.title}</h4>
+                    <p className="text-[10px] text-zinc-400 leading-normal line-clamp-2">{deal.description}</p>
+                    
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      <div className="inline-flex items-center gap-0.5 text-[10px] font-black text-amber-300 bg-amber-950/30 border border-amber-500/20 px-2 py-0.5 rounded-lg">
+                        <span>🎁 {deal.benefitValue}</span>
+                      </div>
+                      <div className="inline-flex items-center gap-0.5 text-[10px] font-black text-orange-400 bg-orange-950/30 border border-orange-500/20 px-2 py-0.5 rounded-lg animate-pulse">
+                        <span>⚡ 남은 수량: {deal.remainingSlots}자리</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      router.push(`/venue/${deal.venueId}`);
+                    }}
+                    className="mt-4 w-full py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:brightness-110 text-xs font-black text-black rounded-xl transition-all shadow-[0_0_12px_rgba(249,115,22,0.25)] flex items-center justify-center gap-1 active:scale-[0.97]"
+                  >
+                    <span>매장 상세 보기 & 딜 선점하기</span>
+                    <ArrowRight className="w-3.5 h-3.5 stroke-[3]" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* 4. Live Seat Board (Horizontal scroll grid) */}
       {!isLoading && availableSeats.length > 0 && (
         <section id="seats-section" className="mt-4 relative z-10 scroll-mt-4">
@@ -179,6 +297,7 @@ export default function HomePage() {
                   venueName={getVenueName(seat.venueId)}
                   onReserve={handleFastReserve}
                   isReserving={reserveLoadingId === seat.id}
+                  dealBenefitValue={getDealBenefitForSeat(seat.id)}
                 />
               </div>
             ))}

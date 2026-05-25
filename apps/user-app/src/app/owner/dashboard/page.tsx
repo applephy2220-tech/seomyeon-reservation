@@ -8,6 +8,7 @@ import { Seat, Reservation, SeatStatus } from '@shared/types';
 import { useRealtimeVenues } from '@shared/hooks/useRealtimeVenues';
 import { useRealtimeSeats } from '@shared/hooks/useRealtimeSeats';
 import { changeSeatStatus, verifyVisitCodeTransaction, cancelReservationAsNoShow } from '@shared/firebase/owner';
+import { createDealTransaction, cancelDealTransaction, useRealtimeDeals } from '@shared/firebase/deals';
 import { LoadingSpinner } from '@shared/components/LoadingSpinner';
 import { 
   Building, 
@@ -23,6 +24,35 @@ import {
   Sparkles
 } from 'lucide-react';
 
+const OwnerDealCountdown = ({ validUntil }: { validUntil: string }) => {
+  const [timeLeft, setTimeLeft] = useState('');
+
+  useEffect(() => {
+    const calculateTime = () => {
+      const now = new Date();
+      const target = new Date(validUntil);
+      const diffMs = target.getTime() - now.getTime();
+      if (diffMs <= 0) {
+        setTimeLeft('만료됨');
+        return;
+      }
+      const mins = Math.floor(diffMs / 1000 / 60);
+      const secs = Math.floor((diffMs / 1000) % 60);
+      setTimeLeft(`${mins}분 ${secs.toString().padStart(2, '0')}초 남음`);
+    };
+
+    calculateTime();
+    const interval = setInterval(calculateTime, 1000);
+    return () => clearInterval(interval);
+  }, [validUntil]);
+
+  return (
+    <span className="font-extrabold text-orange-400 font-mono text-xs">
+      {timeLeft}
+    </span>
+  );
+};
+
 export default function OwnerDashboardPage() {
   const { venues, loading: venuesLoading } = useRealtimeVenues();
   const [selectedVenueId, setSelectedVenueId] = useState<string>('');
@@ -36,6 +66,9 @@ export default function OwnerDashboardPage() {
 
   // Subscribe to seats for the selected venue in real-time
   const { seats, loading: seatsLoading } = useRealtimeSeats({ venueId: selectedVenueId });
+
+  // Subscribe to active deals for the selected venue in real-time
+  const { deals: activeDeals } = useRealtimeDeals({ venueId: selectedVenueId, onlyActive: true });
 
   // Subscribe to all reservations for the selected venue
   const [reservations, setReservations] = useState<Reservation[]>([]);
@@ -137,6 +170,71 @@ export default function OwnerDashboardPage() {
   const [openModalSeat, setOpenModalSeat] = useState<Seat | null>(null);
   const [selectedDuration, setSelectedDuration] = useState<number>(60); // Default 60 minutes
   const [selectedTag, setSelectedTag] = useState<string>(''); // Default no tag
+
+  // Emergency Deal Modal States
+  const [openDealModalSeat, setOpenDealModalSeat] = useState<Seat | null>(null);
+  const [dealTitle, setDealTitle] = useState<string>('초긴급 혜택 딜!');
+  const [dealDescription, setDealDescription] = useState<string>('지금 테이블을 선점 예약하고 특별한 혜택을 챙기세요.');
+  const [dealBenefitType, setDealBenefitType] = useState<'service' | 'discount' | 'time_limit'>('service');
+  const [dealBenefitValue, setDealBenefitValue] = useState('하이볼 1잔 서비스');
+  const [dealDurationMinutes, setDealDurationMinutes] = useState<number>(30); // 30 minutes active by default
+
+  const handleCreateDealClick = (seat: Seat) => {
+    setOpenDealModalSeat(seat);
+    // Preset values
+    setDealTitle('초긴급 혜택 딜!');
+    setDealDescription('지금 테이블을 선점 예약하고 특별한 혜택을 챙기세요.');
+    setDealBenefitType('service');
+    setDealBenefitValue('하이볼 1잔 서비스');
+    setDealDurationMinutes(30);
+  };
+
+  const handleCancelDealClick = async (dealId: string, seatId: string) => {
+    if (!confirm('이 좌석에 설정된 긴급딜을 회수하시겠습니까?')) return;
+    
+    setSeatMutatingId(seatId);
+    try {
+      const res = await cancelDealTransaction(dealId, seatId);
+      alert(res.message);
+    } catch (err) {
+      console.error(err);
+      alert('긴급딜 회수 처리에 실패했습니다.');
+    } finally {
+      setSeatMutatingId(null);
+    }
+  };
+
+  const handleConfirmCreateDeal = async () => {
+    if (!openDealModalSeat) return;
+
+    setSeatMutatingId(openDealModalSeat.id);
+    try {
+      const now = new Date();
+      const expiry = new Date(now.getTime() + dealDurationMinutes * 60 * 1000);
+      const validUntil = expiry.toISOString();
+
+      const res = await createDealTransaction({
+        venueId: selectedVenueId,
+        seatId: openDealModalSeat.id,
+        title: dealTitle,
+        description: dealDescription,
+        benefitType: dealBenefitType,
+        benefitValue: dealBenefitValue,
+        validUntil
+      });
+
+      if (res.success) {
+        setOpenDealModalSeat(null);
+      } else {
+        alert(res.message);
+      }
+    } catch (err) {
+      console.error(err);
+      alert('긴급딜 등록에 실패했습니다.');
+    } finally {
+      setSeatMutatingId(null);
+    }
+  };
 
   const handleKeyPress = (val: string) => {
     if (checkingIn) return;
@@ -405,11 +503,16 @@ export default function OwnerDashboardPage() {
                     className="p-4 rounded-2xl bg-zinc-950/60 border border-zinc-850/80 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 relative transition-all"
                   >
                     <div className="space-y-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-sm font-bold text-white">{seat.label}</span>
                         <span className={`text-[8px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${getSeatStatusStyle(seat.status)}`}>
                           {getSeatStatusLabel(seat.status)}
                         </span>
+                        {seat.activeDealId && (
+                          <span className="inline-flex items-center gap-0.5 rounded bg-orange-950/60 border border-orange-500/30 px-1.5 py-0.5 text-[8px] font-black text-orange-400 shadow-[0_0_8px_rgba(249,115,22,0.2)] animate-pulse">
+                            🔥 긴급딜 진행중
+                          </span>
+                        )}
                       </div>
                       
                       <div className="flex items-center gap-3 text-[10px] text-zinc-550">
@@ -428,7 +531,7 @@ export default function OwnerDashboardPage() {
 
                     {/* Touch Action Status controllers */}
                     {/* Touch Action Status controllers */}
-                    <div className="flex gap-1.5 self-end sm:self-center">
+                    <div className="flex gap-1.5 self-end sm:self-center flex-wrap justify-end">
                       <button
                         onClick={() => handleSeatClickOpen(seat)}
                         disabled={seatMutatingId === seat.id || seat.status === 'locked'}
@@ -440,6 +543,26 @@ export default function OwnerDashboardPage() {
                       >
                         열기
                       </button>
+
+                      {seat.status === 'available' && !seat.activeDealId && (
+                        <button
+                          onClick={() => handleCreateDealClick(seat)}
+                          disabled={seatMutatingId === seat.id}
+                          className="px-3 py-1.5 rounded-lg border text-[10px] font-black transition-all hover:bg-orange-500 hover:text-black border-orange-950/40 text-orange-500 bg-orange-950/15 shadow-[0_0_8px_rgba(249,115,22,0.1)] active:scale-[0.95]"
+                        >
+                          긴급딜
+                        </button>
+                      )}
+
+                      {seat.status === 'available' && seat.activeDealId && (
+                        <button
+                          onClick={() => handleCancelDealClick(seat.activeDealId!, seat.id)}
+                          disabled={seatMutatingId === seat.id}
+                          className="px-3 py-1.5 rounded-lg border text-[10px] font-black transition-all hover:bg-zinc-700 hover:text-white border-zinc-800 text-zinc-500 bg-zinc-900/30 active:scale-[0.95]"
+                        >
+                          딜회수
+                        </button>
+                      )}
 
                       <button
                         onClick={() => handleSeatDirectStatusChange(seat.id, 'occupied')}
@@ -476,6 +599,71 @@ export default function OwnerDashboardPage() {
           </div>
         </div>
       </div>
+
+      {/* 3.5 Active Emergency Deals Live Feed */}
+      <section className="px-6 mt-6">
+        <div className="p-6 rounded-3xl bg-zinc-900/60 border border-zinc-850 backdrop-blur-md">
+          <div className="flex justify-between items-center border-b border-zinc-850 pb-3 mb-4">
+            <h4 className="text-xs font-black tracking-widest text-orange-400 uppercase flex items-center gap-1.5 animate-pulse">
+              <Sparkles className="w-4 h-4 text-orange-400" />
+              🔥 진행 중인 긴급딜 운영 현황 ({activeDeals.length})
+            </h4>
+            <span className="text-[9px] text-zinc-550 font-bold uppercase">LIVE DEALS</span>
+          </div>
+
+          {activeDeals.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-zinc-850 text-zinc-550 font-bold">
+                    <th className="py-3 pr-4">대상 테이블</th>
+                    <th className="py-3 px-4">긴급딜 제목</th>
+                    <th className="py-3 px-4">제공 혜택</th>
+                    <th className="py-3 px-4">남은 유효시간</th>
+                    <th className="py-3 px-4 text-center">딜 소진율 (수량)</th>
+                    <th className="py-3 pl-4 text-right">관리</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-850/60 text-zinc-400 font-medium">
+                  {activeDeals.map((deal) => {
+                    const matchedSeat = seats.find(s => s.id === deal.seatId);
+                    return (
+                      <tr key={deal.id} className="hover:bg-zinc-950/20 transition-all">
+                        <td className="py-3.5 pr-4 font-bold text-white">
+                          {matchedSeat ? matchedSeat.label : '지정 좌석'}
+                        </td>
+                        <td className="py-3.5 px-4 font-semibold text-zinc-300">{deal.title}</td>
+                        <td className="py-3.5 px-4 font-bold text-amber-300">{deal.benefitValue}</td>
+                        <td className="py-3.5 px-4">
+                          <OwnerDealCountdown validUntil={deal.validUntil} />
+                        </td>
+                        <td className="py-3.5 px-4 text-center font-mono font-bold text-orange-400">
+                          {deal.usedSlots} / {deal.totalSlots} 자리 소진
+                        </td>
+                        <td className="py-3.5 pl-4 text-right">
+                          <button
+                            onClick={() => handleCancelDealClick(deal.id, deal.seatId)}
+                            disabled={seatMutatingId === deal.seatId}
+                            className="px-3 py-1.5 rounded-lg bg-red-950/30 border border-red-500/30 hover:bg-red-500 hover:text-black transition-all active:scale-[0.95] text-[10px] font-black text-red-400 disabled:opacity-30"
+                          >
+                            딜 회수
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-center py-8 text-zinc-650 text-xs border border-dashed border-zinc-850 rounded-2xl space-y-2">
+              <Clock className="w-8 h-8 text-zinc-850 mx-auto animate-pulse" />
+              <p className="font-bold">현재 진행 중인 실시간 긴급딜이 없습니다.</p>
+              <p className="text-[10px] text-zinc-650">위 테이블 현황에서 [available] 상태의 테이블에 대해 &quot;긴급딜&quot; 버튼을 눌러보세요!</p>
+            </div>
+          )}
+        </div>
+      </section>
 
       {/* 4. Today's Bookings Feed (Full screen spanning board) */}
       <section className="px-6 mt-6">
@@ -639,6 +827,132 @@ export default function OwnerDashboardPage() {
                 className="flex-[2] py-3 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 text-xs font-black text-white hover:brightness-110 shadow-[0_0_15px_rgba(168,85,247,0.3)] transition-all flex items-center justify-center gap-1.5"
               >
                 <span>빈자리 개방 확정</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 6. Emergency Deal Modal Dialog */}
+      {openDealModalSeat && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/85 backdrop-blur-md animate-fadeIn">
+          <div className="w-full max-w-sm p-6 rounded-3xl bg-zinc-900 border border-orange-500/30 shadow-[0_0_30px_rgba(249,115,22,0.15)] space-y-5">
+            <div className="flex justify-between items-start">
+              <div>
+                <span className="text-[9px] font-bold text-orange-400 uppercase tracking-widest bg-orange-950/40 px-2 py-0.5 rounded border border-orange-500/20">
+                  🔥 EMERGENCY DEAL ISSUER
+                </span>
+                <h4 className="text-base font-black text-white mt-1.5">[{openDealModalSeat.label}] 긴급딜 등록 설정</h4>
+              </div>
+              <button 
+                onClick={() => setOpenDealModalSeat(null)}
+                className="p-1 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-400 hover:text-white"
+              >
+                <XCircle className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Presets Selection */}
+            <div className="space-y-2">
+              <label className="text-[10px] font-black tracking-wider text-zinc-500 uppercase block">추천 딜 템플릿 선택</label>
+              <div className="space-y-2">
+                {[
+                  { title: '30분 내 방문 시 하이볼 1잔', desc: '지금 즉시 매장 방문 고객께 시원한 산토리 하이볼 1잔을 서비스로 드립니다!', type: 'service' as const, value: '하이볼 1잔 서비스' },
+                  { title: '오늘만 안주 서비스 제공', desc: '지금 예약 후 30분 내 매장 도착 시 갓 튀긴 감자튀김을 요리 주방에서 즉시 조리해 서비스합니다!', type: 'service' as const, value: '감자튀김 안주 서비스' },
+                  { title: '마감 전 20% 초특급 할인 혜택', desc: '마감 전 비어있는 특별석에 대해 총 현장 이용 금액의 20%를 전액 현장 차감 할인해 드립니다!', type: 'discount' as const, value: '20% 현장 할인' },
+                ].map((preset, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => {
+                      setDealTitle(preset.title);
+                      setDealDescription(preset.desc);
+                      setDealBenefitType(preset.type);
+                      setDealBenefitValue(preset.value);
+                    }}
+                    type="button"
+                    className={`w-full py-2 px-3 rounded-xl border text-left text-[10px] font-bold transition-all ${
+                      dealTitle === preset.title
+                        ? 'bg-orange-950/20 border-orange-500 text-white shadow-[0_0_10px_rgba(249,115,22,0.05)]'
+                        : 'bg-zinc-950 border-zinc-850 text-zinc-500 hover:border-zinc-800'
+                    }`}
+                  >
+                    <span className="block text-white font-extrabold">{preset.title}</span>
+                    <span className="block text-[8px] text-zinc-550 truncate mt-0.5">{preset.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Manual Fields */}
+            <div className="space-y-3.5 bg-zinc-950/50 p-4 rounded-2xl border border-zinc-850/50">
+              <div className="space-y-1">
+                <label className="text-[9px] font-black text-zinc-650 uppercase">딜 제목</label>
+                <input 
+                  type="text" 
+                  value={dealTitle}
+                  onChange={(e) => setDealTitle(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-850 rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-650 focus:outline-none focus:border-orange-500/50"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[9px] font-black text-zinc-650 uppercase">제공 혜택 상세값</label>
+                <input 
+                  type="text" 
+                  value={dealBenefitValue}
+                  onChange={(e) => setDealBenefitValue(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-850 rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-650 focus:outline-none focus:border-orange-500/50"
+                  placeholder="예: 하이볼 1잔 서비스, 20% 현장 할인"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-zinc-650 uppercase">혜택 종류</label>
+                  <select
+                    value={dealBenefitType}
+                    onChange={(e) => setDealBenefitType(e.target.value as 'service' | 'discount' | 'time_limit')}
+                    className="w-full bg-zinc-900 border border-zinc-850 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-orange-500/50"
+                  >
+                    <option value="service">안주/음료 서비스</option>
+                    <option value="discount">현장 총액 할인</option>
+                    <option value="time_limit">이용 시간 연장</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-zinc-650 uppercase">딜 유효 기간 (선택)</label>
+                  <select
+                    value={dealDurationMinutes}
+                    onChange={(e) => setDealDurationMinutes(Number(e.target.value))}
+                    className="w-full bg-zinc-900 border border-zinc-850 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-orange-500/50"
+                  >
+                    <option value={15}>15분</option>
+                    <option value={30}>30분</option>
+                    <option value={45}>45분</option>
+                    <option value={60}>1시간</option>
+                    <option value={120}>2시간</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* CTAs */}
+            <div className="pt-2 flex gap-3">
+              <button
+                onClick={() => setOpenDealModalSeat(null)}
+                type="button"
+                className="flex-1 py-3 rounded-xl bg-zinc-950 border border-zinc-850 text-xs font-bold text-zinc-500 hover:text-white transition-colors"
+              >
+                닫기
+              </button>
+              <button
+                onClick={handleConfirmCreateDeal}
+                disabled={seatMutatingId === openDealModalSeat.id}
+                type="button"
+                className="flex-[2] py-3 rounded-xl bg-gradient-to-r from-orange-600 to-amber-600 text-xs font-black text-white hover:brightness-110 shadow-[0_0_15px_rgba(249,115,22,0.3)] transition-all flex items-center justify-center gap-1.5"
+              >
+                <span>긴급딜 발행 확정</span>
               </button>
             </div>
           </div>

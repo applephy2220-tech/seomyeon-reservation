@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { db } from '@shared/firebase/clientApp';
 import { doc, onSnapshot } from 'firebase/firestore';
-import { Seat } from '@shared/types';
+import { Seat, Deal } from '@shared/types';
 import { useRealtimeVenueDetail } from '@shared/hooks/useRealtimeVenues';
 import { LoadingSpinner } from '@shared/components/LoadingSpinner';
 import { releaseSeat, confirmMockPaymentTransaction } from '@shared/firebase/booking';
@@ -28,6 +28,7 @@ export default function ReservationPage({ params }: ReservationPageProps) {
   const router = useRouter();
 
   const [seat, setSeat] = useState<Seat | null>(null);
+  const [activeDeal, setActiveDeal] = useState<Deal | null>(null);
   const [seatLoading, setSeatLoading] = useState(true);
   const [timeLeft, setTimeLeft] = useState<number>(300); // 5 minutes default
   const [selectedMethod, setSelectedMethod] = useState<string>('card');
@@ -61,6 +62,27 @@ export default function ReservationPage({ params }: ReservationPageProps) {
 
     return () => unsubscribe();
   }, [seatId, router]);
+
+  // Subscribe to the active deal document if seat.activeDealId is present
+  useEffect(() => {
+    if (!seat || !seat.activeDealId) {
+      setActiveDeal(null);
+      return;
+    }
+
+    const dealRef = doc(db, 'deals', seat.activeDealId);
+    const unsubscribe = onSnapshot(dealRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setActiveDeal({ id: docSnap.id, ...docSnap.data() } as Deal);
+      } else {
+        setActiveDeal(null);
+      }
+    }, (err) => {
+      console.error('Error fetching active deal details:', err);
+    });
+
+    return () => unsubscribe();
+  }, [seat?.activeDealId]);
 
   // Fetch venue detail using custom hook
   const { venue, loading: venueLoading } = useRealtimeVenueDetail(seat?.venueId || '');
@@ -132,7 +154,8 @@ export default function ReservationPage({ params }: ReservationPageProps) {
         venue.id,
         venue.name,
         seat.label,
-        'demo-user' // Mock authenticated user UID
+        'demo-user', // Mock authenticated user UID
+        seat.activeDealId
       );
 
       if (res.success && res.reservationId) {
@@ -240,6 +263,19 @@ export default function ReservationPage({ params }: ReservationPageProps) {
               <p className="text-sm font-bold text-white">최대 {seat.capacity}명 수용</p>
             </div>
           </div>
+
+          {activeDeal && (
+            <div className="p-3.5 rounded-2xl bg-orange-950/20 border border-orange-500/20 flex flex-col gap-1 shadow-[0_0_10px_rgba(249,115,22,0.05)]">
+              <span className="text-[9px] font-black text-orange-400 uppercase tracking-widest flex items-center gap-1 animate-pulse">
+                🔥 적용 대기 중인 긴급 딜 혜택
+              </span>
+              <h5 className="text-xs font-black text-white">{activeDeal.title}</h5>
+              <p className="text-[9px] text-zinc-400 leading-normal">{activeDeal.description}</p>
+              <div className="mt-1 text-[11px] font-black text-amber-300">
+                🎁 제공 혜택: {activeDeal.benefitValue}
+              </div>
+            </div>
+          )}
 
           <div className="pt-3 border-t border-zinc-800/60 flex justify-between items-center">
             <div className="space-y-1">
