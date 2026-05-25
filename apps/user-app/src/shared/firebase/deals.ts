@@ -10,6 +10,7 @@ import {
 } from 'firebase/firestore';
 import { useState, useEffect, useRef } from 'react';
 import { Deal } from '../types';
+import { triggerNotification } from './notification';
 
 /**
  * 1. Transaction to atomically create a Deal and bind it to the Seat
@@ -23,7 +24,7 @@ export const createDealTransaction = async (
   const seatRef = doc(db, 'seats', dealData.seatId);
 
   try {
-    return await runTransaction(db, async (transaction) => {
+    const result = await runTransaction(db, async (transaction) => {
       const seatSnap = await transaction.get(seatRef);
       if (!seatSnap.exists()) {
         throw new Error('좌석이 데이터베이스에 존재하지 않습니다.');
@@ -68,6 +69,19 @@ export const createDealTransaction = async (
         message: `테이블 [${seatData.label}]에 긴급딜이 성공적으로 발행되었습니다!`
       };
     });
+
+    // Dispatch hybrid real-time notifications on successful deal creation
+    if (result.success) {
+      triggerNotification(
+        'demo-user',
+        '🔥 [신규 긴급딜] 서면 핫플레이스 특급 혜택!',
+        `서면 빈자리에 긴급 혜택 딜 [${dealData.benefitValue}]이(가) 발행되었습니다. 지금 선점해 보세요!`,
+        `/venue/${dealData.venueId}`
+      );
+    }
+
+    return result;
+
   } catch (error: unknown) {
     console.error('createDealTransaction failed:', error);
     const err = error as Error;

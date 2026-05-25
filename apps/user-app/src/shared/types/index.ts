@@ -44,13 +44,15 @@ export interface Reservation {
   seatId: string;
   venueName: string;
   seatLabel: string;
-  status: 'confirmed' | 'used' | 'canceled' | 'noshow_expired';
+  status: 'confirmed' | 'used' | 'visited' | 'completed' | 'canceled' | 'noshow_expired';
   visitTime: string;
   expiresAt: string;
   paymentAmount: number;
   visitCode: string; // 4-digit random number (e.g. "8219")
   createdAt: unknown;
   dealId?: string | null; // Relational link to the applied deal
+  visitedAt?: string;
+  completedAt?: string;
 }
 
 export interface Deal {
@@ -68,4 +70,5 @@ export interface Deal {
   usedSlots: number;
   remainingSlots: number;
   linkedSeatIds?: string[];
+  clicks?: number; // Cumulative campaign view counts (mockable)
 }

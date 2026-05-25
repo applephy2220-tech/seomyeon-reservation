@@ -101,10 +101,23 @@ function ReservationSuccessContent() {
                 {reservation.visitCode}
               </span>
             </div>
+
+            {/* Premium Glowing scanable QR Code */}
+            <div className="py-4 flex justify-center items-center">
+              <div className="p-3 rounded-2xl bg-white border border-purple-500/30 shadow-[0_0_20px_rgba(168,85,247,0.25)] relative overflow-hidden animate-fadeIn">
+                <img 
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(
+                    JSON.stringify({ reservationId: reservation.id, visitCode: reservation.visitCode })
+                  )}`}
+                  alt="QR Visit Code"
+                  className="w-36 h-36 object-contain"
+                />
+              </div>
+            </div>
             
-            <p className="text-[10px] font-semibold text-zinc-500 pt-2 flex items-center justify-center gap-1 animate-pulse">
+            <p className="text-[10px] font-semibold text-zinc-500 pt-1 flex items-center justify-center gap-1 animate-pulse">
               <ClipboardCheck className="w-3.5 h-3.5 text-zinc-500" />
-              “매장 방문 시 직원에게 이 코드를 보여주세요”
+              “직원에게 이 QR 코드나 방문 코드를 보여주세요”
             </p>
           </div>
 

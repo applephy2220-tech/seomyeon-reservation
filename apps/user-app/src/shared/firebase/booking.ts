@@ -7,6 +7,7 @@ import {
   Timestamp 
 } from 'firebase/firestore';
 import { Seat, Reservation, Deal } from '../types';
+import { triggerNotification } from './notification';
 
 /**
  * 1. Firestore Transaction to safely lock a seat for 5 minutes
@@ -94,9 +95,12 @@ export const confirmMockPaymentTransaction = async (
   const reservationsCol = collection(db, 'reservations');
   const newReservationDocRef = doc(reservationsCol);
   const reservationId = newReservationDocRef.id;
+  
+  // Outer scope declaration of visitCode to trigger notifications after transaction finishes
+  const visitCode = Math.floor(1000 + Math.random() * 9000).toString();
 
   try {
-    return await runTransaction(db, async (transaction) => {
+    const result = await runTransaction(db, async (transaction) => {
       const seatDoc = await transaction.get(seatRef);
       if (!seatDoc.exists()) {
         throw new Error('좌석 정보를 찾을 수 없습니다.');
@@ -141,9 +145,6 @@ export const confirmMockPaymentTransaction = async (
         });
       }
 
-      // Generate a 4-digit random visit verification code
-      const visitCode = Math.floor(1000 + Math.random() * 9000).toString();
-      
       // Visit details (defaulting today)
       const visitTime = now.toISOString();
       const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours expiry
@@ -184,6 +185,37 @@ export const confirmMockPaymentTransaction = async (
         message: '예약 및 결제가 정상적으로 확정되었습니다.' 
       };
     });
+
+    // Dispatch hybrid real-time notifications on successful payment transaction
+    if (result.success) {
+      // A. Alert Guest
+      triggerNotification(
+        userId,
+        '🎉 예약 확정 완료!',
+        `[${venueName} ${seatLabel}] 예약이 성공적으로 확정되었습니다. 디지털 티켓(방문코드: ${visitCode})을 확인해 주세요.`,
+        `/reservation-success?id=${reservationId}`
+      );
+      // B. Alert Venue Owner
+      triggerNotification(
+        'demo-owner',
+        '🔔 신규 예약 접수!',
+        `[${seatLabel}] 새로운 예약 신청이 접수되었습니다! (방문코드: ${visitCode})`,
+        `/owner/dashboard`
+      );
+      
+      // C. If deal was applied, alert Owner about deal checkout success
+      if (dealId) {
+        triggerNotification(
+          'demo-owner',
+          '🔥 긴급딜 예약 성사!',
+          `[${seatLabel}] 테이블에 발행된 긴급딜 혜택 적용 예약이 성사되었습니다.`,
+          `/owner/dashboard`
+        );
+      }
+    }
+
+    return result;
+
   } catch (error: unknown) {
     console.error('confirmMockPaymentTransaction failed:', error);
     const err = error as Error;
