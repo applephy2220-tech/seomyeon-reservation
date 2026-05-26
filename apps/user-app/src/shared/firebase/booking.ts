@@ -6,7 +6,7 @@ import {
   updateDoc, 
   Timestamp 
 } from 'firebase/firestore';
-import { Seat, Reservation, Deal } from '../types';
+import { Seat, Reservation, Deal, OrderItem } from '../types';
 import { triggerNotification } from './notification';
 
 /**
@@ -79,6 +79,29 @@ export const releaseSeat = async (seatId: string): Promise<void> => {
   }
 };
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const sanitizeData = <T extends Record<string, any>>(obj: T): T => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result: any = {};
+  for (const key in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      const val = obj[key];
+      if (val === undefined) {
+        // Convert undefined to null or omit it. Here we omit it to keep the database clean,
+        // unless it's a specific field. We will explicitly provide null for required ones.
+        continue;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (val !== null && typeof val === 'object' && !((val as any) instanceof Timestamp) && !((val as any) instanceof Date)) {
+        result[key] = sanitizeData(val);
+      } else {
+        result[key] = val;
+      }
+    }
+  }
+  return result as T;
+};
+
 /**
  * 3. Firestore Transaction to confirm payment and transition seat to 'reserved' status,
  * while creating the reservation document atomically.
@@ -89,7 +112,11 @@ export const confirmMockPaymentTransaction = async (
   venueName: string,
   seatLabel: string,
   userId: string,
-  dealId?: string | null
+  dealId?: string | null,
+  paymentKey: string = 'mock-key-' + Date.now(),
+  orders: OrderItem[] = [],
+  eta: string = '',
+  customAmount: number = 5000
 ): Promise<{ success: boolean; reservationId?: string; message: string }> => {
   const seatRef = doc(db, 'seats', seatId);
   const reservationsCol = collection(db, 'reservations');
@@ -149,6 +176,10 @@ export const confirmMockPaymentTransaction = async (
       const visitTime = now.toISOString();
       const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours expiry
 
+      // Calculate safe payment status based on whether it is mock payment or real Toss
+      const isMockPayment = paymentKey.startsWith('mock-key-');
+      const paymentStatus = isMockPayment ? 'mock_paid' : 'paid';
+
       const reservationData: Reservation = {
         id: reservationId,
         userId,
@@ -157,16 +188,25 @@ export const confirmMockPaymentTransaction = async (
         venueName,
         seatLabel,
         status: 'confirmed',
+        paymentStatus,
+        paymentKey,
         visitTime,
         expiresAt,
-        paymentAmount: 5000,
-        visitCode,
+        paymentAmount: customAmount,
+        visitCode: visitCode || Math.floor(1000 + Math.random() * 9000).toString(),
         createdAt: Timestamp.now(),
-        dealId: dealId || null
+        dealId: dealId || null,
+        orderId: null,
+        preOrderId: null,
+        // 선주문 연동 추가
+        orders: orders && orders.length > 0 ? orders : [],
+        orderStatus: orders && orders.length > 0 ? 'pending' : 'none',
+        eta: eta || '',
+        cookingDuration: 15
       };
 
-      // B. Create the reservation record
-      transaction.set(newReservationDocRef, reservationData);
+      // B. Create the reservation record with sanitized data (no undefined fields)
+      transaction.set(newReservationDocRef, sanitizeData(reservationData));
 
       // C. Update the seat status, current reservation ID, and activeDealId link
       transaction.update(seatRef, {
@@ -188,18 +228,26 @@ export const confirmMockPaymentTransaction = async (
 
     // Dispatch hybrid real-time notifications on successful payment transaction
     if (result.success) {
+      const hasOrder = orders && orders.length > 0;
+      const orderCount = hasOrder ? orders.reduce((sum, item) => sum + item.quantity, 0) : 0;
+      
       // A. Alert Guest
       triggerNotification(
         userId,
-        '🎉 예약 확정 완료!',
-        `[${venueName} ${seatLabel}] 예약이 성공적으로 확정되었습니다. 디지털 티켓(방문코드: ${visitCode})을 확인해 주세요.`,
+        hasOrder ? '🎉 예약 및 선주문 접수 완료!' : '🎉 예약 확정 완료!',
+        hasOrder 
+          ? `[${venueName} ${seatLabel}] 예약과 동시에 안주 ${orderCount}개 선주문 결제가 완료되었습니다. 도착 시 즉시 제공됩니다!`
+          : `[${venueName} ${seatLabel}] 예약이 성공적으로 확정되었습니다. 디지털 티켓(방문코드: ${visitCode})을 확인해 주세요.`,
         `/reservation-success?id=${reservationId}`
       );
+      
       // B. Alert Venue Owner
       triggerNotification(
         'demo-owner',
-        '🔔 신규 예약 접수!',
-        `[${seatLabel}] 새로운 예약 신청이 접수되었습니다! (방문코드: ${visitCode})`,
+        hasOrder ? '🔔 신규 예약 및 주방 선주문 발생!' : '🔔 신규 예약 접수!',
+        hasOrder
+          ? `[${seatLabel}] 테이블에 메뉴 ${orderCount}개 선주문이 접수되었습니다! 주방 조비를 확인해 주세요. (도착 ETA: ${eta || '즉시'})`
+          : `[${seatLabel}] 새로운 예약 신청이 접수되었습니다! (방문코드: ${visitCode})`,
         `/owner/dashboard`
       );
       

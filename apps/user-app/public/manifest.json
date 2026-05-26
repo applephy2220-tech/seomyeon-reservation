@@ -1,7 +1,7 @@
 {
-  "name": "서면 실시간 빈자리 예약 플랫폼 MVP",
-  "short_name": "서면빈자리",
-  "description": "부산 서면 술집 실시간 빈자리 현황 확인 및 빠른 예약 매칭 플랫폼",
+  "name": "서면나우 - 실시간 빈자리 예약",
+  "short_name": "서면나우",
+  "description": "부산 서면 술집 실시간 빈자리 현황 확인 및 빠른 PWA 예약 플랫폼",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0B0B0C",

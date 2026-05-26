@@ -6,7 +6,8 @@ import {
   createUserWithEmailAndPassword, 
   signOut as firebaseSignOut, 
   User as FirebaseUser,
-  updateProfile
+  updateProfile,
+  signInWithCustomToken
 } from 'firebase/auth';
 import { doc, setDoc, getDoc, Timestamp } from 'firebase/firestore';
 import { UserProfile } from '../types';
@@ -47,6 +48,23 @@ export const useAuth = () => {
 
     return () => unsubscribe();
   }, []);
+
+  // Custom Token Auth: login using a custom token from Kakao login callback
+  const loginWithKakaoCustomToken = async (customToken: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const userCredential = await signInWithCustomToken(auth, customToken);
+      return userCredential.user;
+    } catch (err: unknown) {
+      const error = err as { message?: string };
+      console.error('Kakao custom token login error:', err);
+      setError(error.message || '카카오 로그인 처리 중 오류가 발생했습니다.');
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Hybrid Auth Helper: Tries to sign in, if user not found, registers automatically!
   const loginOrRegister = async (email: string, pass: string, name?: string) => {
@@ -100,6 +118,7 @@ export const useAuth = () => {
     loading,
     error,
     loginOrRegister,
+    loginWithKakaoCustomToken,
     logout
   };
 };

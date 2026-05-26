@@ -216,6 +216,7 @@ export const completeVisitTransaction = async (
       // A. Transition reservation status to 'completed'
       transaction.update(resRef, {
         status: 'completed',
+        paymentStatus: 'completed',
         completedAt: nowStr,
         updatedAt: Timestamp.now()
       });
@@ -293,6 +294,7 @@ export const cancelReservationAsNoShow = async (
       // Atomically update reservation to 'noshow_expired'
       transaction.update(resRef, {
         status: 'noshow_expired',
+        paymentStatus: 'forfeited',
         updatedAt: Timestamp.now()
       });
 

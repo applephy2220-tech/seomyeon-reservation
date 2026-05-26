@@ -11,6 +11,9 @@ import { LoadingSpinner } from '@shared/components/LoadingSpinner';
 import { BottomNavigation } from '@shared/components/BottomNavigation';
 import { Seat } from '@shared/types';
 import { lockSeatTransaction } from '@shared/firebase/booking';
+import { useAuth } from '@shared/hooks/useAuth';
+import { collection, addDoc } from 'firebase/firestore';
+import { db } from '@shared/firebase/clientApp';
 import { 
   ArrowLeft, 
   Star, 
@@ -18,7 +21,9 @@ import {
   Phone, 
   Info,
   Flame,
-  CheckCircle2
+  CheckCircle2,
+  AlertTriangle,
+  Send
 } from 'lucide-react';
 
 interface VenuePageProps {
@@ -81,6 +86,45 @@ export default function VenueDetailPage({ params }: VenuePageProps) {
   const [reserveLoadingId, setReserveLoadingId] = useState<string | null>(null);
   const [successDialog, setSuccessDialog] = useState<{ label: string } | null>(null);
   const [imgError, setImgError] = useState(false);
+
+  // User Auth and Report States
+  const { user, profile } = useAuth();
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [reportReason, setReportReason] = useState('허위 정보');
+  const [reportDesc, setReportDesc] = useState('');
+  const [isReporting, setIsReporting] = useState(false);
+
+  const handleCreateReport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) {
+      alert('신고 기능을 이용하려면 로그인이 필요합니다.');
+      router.push('/login');
+      return;
+    }
+    
+    setIsReporting(true);
+    try {
+      await addDoc(collection(db, 'reports'), {
+        reporterId: user.uid,
+        reporterName: profile?.displayName || user.email || '익명 나들이객',
+        targetType: 'venue',
+        targetId: venueId,
+        targetName: venue?.name || '알 수 없는 매장',
+        reason: reportReason,
+        description: reportDesc,
+        status: 'pending',
+        createdAt: new Date().toISOString()
+      });
+      alert('신고가 성공적으로 접수되었습니다. 관리자 검토 후 조치됩니다.');
+      setIsReportModalOpen(false);
+      setReportDesc('');
+    } catch (err) {
+      console.error('Error reporting venue:', err);
+      alert('신고 등록 중 오류가 발생했습니다.');
+    } finally {
+      setIsReporting(false);
+    }
+  };
 
   // Firestore Interactive Seating: lock seat in real-time
   const handleReserveSeat = async (seat: Seat) => {
@@ -191,15 +235,25 @@ export default function VenueDetailPage({ params }: VenuePageProps) {
         </p>
 
         {/* Address and Info Grid */}
-        <div className="space-y-2 text-xs text-zinc-500 pt-1">
-          <div className="flex items-center gap-2">
-            <MapPin className="w-4 h-4 text-zinc-600 flex-shrink-0" />
-            <span className="truncate">{venue.address}</span>
+        <div className="space-y-2 text-xs text-zinc-500 pt-1 flex justify-between items-end">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <MapPin className="w-4 h-4 text-zinc-600 flex-shrink-0" />
+              <span className="truncate">{venue.address}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Phone className="w-4 h-4 text-zinc-600" />
+              <span>051-808-XXXX (실시간 문의)</span>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Phone className="w-4 h-4 text-zinc-600" />
-            <span>051-808-XXXX (실시간 문의)</span>
-          </div>
+          
+          <button
+            onClick={() => setIsReportModalOpen(true)}
+            className="flex items-center gap-1 text-[10px] text-zinc-650 hover:text-red-400 font-bold transition-all px-2.5 py-1.5 rounded-lg bg-zinc-950/40 border border-zinc-900 hover:border-red-950/40 hover:bg-red-950/10 active:scale-95"
+          >
+            <AlertTriangle className="w-3 h-3 text-red-500/40 hover:text-red-500" />
+            <span>신고하기</span>
+          </button>
         </div>
       </section>
 
@@ -278,6 +332,69 @@ export default function VenueDetailPage({ params }: VenuePageProps) {
             >
               확인
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* 신고 모달창 (Report Modal) */}
+      {isReportModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/85 backdrop-blur-md animate-fadeIn animate-duration-150">
+          <div className="w-full max-w-xs p-6 rounded-2xl bg-[#121214] border border-red-500/20 text-left space-y-4 shadow-[0_0_40px_rgba(239,68,68,0.15)]">
+            <div className="flex items-center gap-2 text-red-400 font-extrabold text-sm border-b border-zinc-900 pb-2">
+              <AlertTriangle className="w-4 h-4 text-red-500" />
+              <span>허위 정보 및 어뷰징 신고</span>
+            </div>
+            
+            <form onSubmit={handleCreateReport} className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider pl-0.5">
+                  신고 사유
+                </label>
+                <select
+                  value={reportReason}
+                  onChange={(e) => setReportReason(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-red-500/50 transition-colors cursor-pointer"
+                >
+                  <option value="허위 정보">허위 정보 (주소/메뉴/사진)</option>
+                  <option value="영업하지 않음">영업하지 않음 (폐업/휴업)</option>
+                  <option value="불친절/서비스 불량">불친절/서비스 불량</option>
+                  <option value="좌석 정보 오기">좌석 정보가 실제와 다름</option>
+                  <option value="기타 어뷰징">기타 어뷰징 및 욕설</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider pl-0.5">
+                  상세 설명
+                </label>
+                <textarea
+                  required
+                  rows={3}
+                  placeholder="신고 내용을 상세하게 서술해주세요..."
+                  value={reportDesc}
+                  onChange={(e) => setReportDesc(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-700 focus:outline-none focus:border-red-500/50 transition-colors resize-none"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsReportModalOpen(false)}
+                  className="flex-1 rounded-xl bg-zinc-900 border border-zinc-800 py-2.5 text-xs font-bold text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-all active:scale-95"
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  disabled={isReporting}
+                  className="flex-1 rounded-xl bg-gradient-to-r from-red-650 to-orange-550 py-2.5 text-xs font-bold text-white hover:brightness-110 shadow-[0_0_12px_rgba(239,68,68,0.2)] flex items-center justify-center gap-1 transition-all active:scale-95 disabled:opacity-50"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>{isReporting ? '제출중...' : '제출'}</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

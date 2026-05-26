@@ -35,6 +35,8 @@ export interface UserProfile {
   displayName: string;
   phoneNumber: string;
   createdAt: unknown;
+  role?: 'user' | 'owner' | 'admin';
+  status?: 'active' | 'pending' | 'approved' | 'rejected' | 'banned';
 }
 
 export interface Reservation {
@@ -53,6 +55,16 @@ export interface Reservation {
   dealId?: string | null; // Relational link to the applied deal
   visitedAt?: string;
   completedAt?: string;
+  paymentStatus?: 'paid' | 'mock_paid' | 'refunded' | 'forfeited' | 'completed';
+  paymentKey?: string;
+  orderId?: string | null;
+  preOrderId?: string | null;
+  // 선주문/선결제 확장 필드
+  orders?: OrderItem[];
+  orderStatus?: 'pending' | 'preparing' | 'ready' | 'served' | 'none';
+  eta?: string; // 예: "15분 뒤 도착"
+  cookingStartedAt?: string;
+  cookingDuration?: number; // 조리 예상 소요시간 (기본값 15분)
 }
 
 export interface Deal {
@@ -71,4 +83,68 @@ export interface Deal {
   remainingSlots: number;
   linkedSeatIds?: string[];
   clicks?: number; // Cumulative campaign view counts (mockable)
+}
+
+// ==========================================
+// 선주문 / 선결제 / 메뉴 아키텍처 타입
+// ==========================================
+export interface MenuOptionItem {
+  name: string;
+  price: number;
+}
+
+export interface MenuOption {
+  id: string;
+  name: string;
+  type: 'select' | 'checkbox';
+  items: MenuOptionItem[];
+  required?: boolean;
+}
+
+export interface MenuItem {
+  id: string;
+  venueId: string;
+  name: string;
+  price: number;
+  description: string;
+  imageUrl: string;
+  category: string; // 예: 안주류, 탕류, 주류 등
+  options: MenuOption[];
+  status: 'available' | 'sold_out';
+  isPopular: boolean;
+  createdAt: unknown;
+}
+
+export interface SelectedOption {
+  optionName: string;
+  itemName: string;
+  price: number;
+}
+
+export interface OrderItem {
+  menuId: string;
+  name: string;
+  price: number; // 기본단가 + 옵션 합산
+  quantity: number;
+  selectedOptions: SelectedOption[];
+}
+
+export interface AiRecommendation {
+  id: string;
+  type: 'deal_trigger' | 'cooking_timing' | 'no_show_warning' | 'turnover_insight' | 'bestseller_recommendation';
+  title: string;
+  description: string;
+  severity: 'low' | 'medium' | 'high';
+  actionLabel?: string;
+  actionPayload?: unknown; // Config parameters for quick execution (e.g., deal preset params)
+  createdAt: unknown;
+}
+
+export interface VenueStats {
+  venueId: string;
+  averageTurnoverRate: number; // in turns/seat/day
+  noShowProbability: number;   // 0.0 to 1.0
+  optimalPrepMinutes: number;   // average cooking duration based on traffic
+  peakHours: string[];
+  lastCalculatedAt: unknown;
 }

@@ -1,0 +1,173 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ==========================================
+    // 공통 헬퍼 함수 (Utility Helper Functions)
+    // ==========================================
+
+    // 사용자가 로그인 상태인지 검증합니다.
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // 요청하는 사용자가 리소스 소유자이거나 데모 고객 계정인지 검증합니다.
+    function isResourceOwner(userId) {
+      return isAuthenticated() && (request.auth.uid == userId || userId == 'demo-user');
+    }
+
+    // Firestore에 저장된 사용자의 프로필 데이터를 조회합니다.
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // 요청자가 관리자(admin role 또는 demo-admin)인지 검증합니다.
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.uid == 'demo-admin' || 
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserData().role == 'admin')
+      );
+    }
+
+    // 요청자가 업주(owner role 또는 demo-owner)인지 검증합니다.
+    function isOwner() {
+      return isAuthenticated() && (
+        request.auth.uid == 'demo-owner' || 
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserData().role == 'owner')
+      );
+    }
+
+    // ==========================================
+    // 1. users (사용자 프로필 컬렉션)
+    // ==========================================
+    match /users/{userId} {
+      // 본인 프로필만 조회하거나, 업주/관리자가 고객 확인을 위해 조회할 수 있습니다.
+      allow read: if isResourceOwner(userId) || isOwner() || isAdmin() || userId == 'demo-user';
+      
+      // 본인의 프로필만 생성 및 수정 가능하며, 일반 사용자는 임의로 role을 부여할 수 없습니다.
+      allow create, update: if isResourceOwner(userId) && (
+        !request.resource.data.keys().contains('role') || 
+        request.resource.data.role == null || 
+        isAdmin()
+      );
+      
+      // 프로필 삭제는 오직 관리자만 가능합니다.
+      allow delete: if isAdmin();
+    }
+
+    // ==========================================
+    // 2. venues (매장 정보 컬렉션)
+    // ==========================================
+    match /venues/{venueId} {
+      // 매장 정보 탐색은 비로그인 손님을 포함하여 누구나 가능합니다.
+      allow read: if true;
+      
+      // 매장 등록, 정보 수정 및 폐업 처리는 업주 또는 관리자만 가능합니다.
+      allow write: if isOwner() || isAdmin();
+    }
+
+    // ==========================================
+    // 3. seats (매장 좌석 컬렉션)
+    // ==========================================
+    match /seats/{seatId} {
+      // 실시간 빈자리 현황 조회는 누구나 실시간으로 가능합니다.
+      allow read: if true;
+      
+      // 좌석 신규 등록 및 영구 삭제는 오직 업주와 관리자만 가능합니다.
+      allow create, delete: if isOwner() || isAdmin();
+
+      // 좌석 상태 변경에 대한 정교한 검증:
+      allow update: if isOwner() || isAdmin() || (
+        isAuthenticated() && (
+          // Case 1: 손님이 빈 좌석을 5분간 임시 선점(lock)할 때
+          (request.resource.data.status == 'locked' && 
+           (request.resource.data.lockedBy == request.auth.uid || request.resource.data.lockedBy == 'demo-user')) ||
+          
+          // Case 2: 선점 시간이 만료되거나 취소하여 좌석을 다시 개방(available)할 때
+          (request.resource.data.status == 'available' && 
+           (resource.data.lockedBy == request.auth.uid || resource.data.lockedBy == 'demo-user')) ||
+          
+          // Case 3: 임시 선점한 좌석에 대해 결제를 성공하여 예약을 완료(reserved)할 때
+          (request.resource.data.status == 'reserved' && 
+           (resource.data.lockedBy == request.auth.uid || resource.data.lockedBy == 'demo-user'))
+        )
+      ) || (
+        // 데모 환경의 호환성을 위해 'demo-user' 타겟 동작을 보장합니다.
+        resource.data.lockedBy == 'demo-user' || 
+        request.resource.data.lockedBy == 'demo-user' || 
+        seatId == 'demo-user'
+      );
+    }
+
+    // ==========================================
+    // 4. deals (긴급딜 컬렉션)
+    // ==========================================
+    match /deals/{dealId} {
+      // 긴급딜 탐색은 비로그인 손님을 포함하여 누구나 가능합니다.
+      allow read: if true;
+      
+      // 긴급딜 발행 및 삭제는 업주 또는 관리자만 가능합니다.
+      allow create, delete: if isOwner() || isAdmin();
+
+      // 긴급딜 조작 방지 규칙:
+      allow update: if isOwner() || isAdmin() || (
+        // Case 1: 손님이 예약 결제 트랜잭션 과정에서 딜 슬롯을 차감할 때
+        // usedSlots가 반드시 1만 증가하고, remainingSlots가 반드시 1만 감소해야 합니다.
+        request.resource.data.usedSlots == resource.data.usedSlots + 1 &&
+        request.resource.data.remainingSlots == resource.data.remainingSlots - 1 &&
+        // 긴급딜 혜택 내용, 제목, 전체 수량 등 다른 메타데이터 위조를 철저히 차단합니다.
+        request.resource.data.totalSlots == resource.data.totalSlots &&
+        request.resource.data.title == resource.data.title &&
+        request.resource.data.benefitValue == resource.data.benefitValue
+      ) || (
+        // Case 2: 시간 만료 또는 수량 소진 시 클라이언트 셀프 힐링(status -> expired) 상태 전환
+        request.resource.data.status == 'expired' && resource.data.status == 'active'
+      );
+    }
+
+    // ==========================================
+    // 5. reservations (예약 주문 컬렉션)
+    // ==========================================
+    match /reservations/{reservationId} {
+      // 예약 내역은 예약 고객 본인, 업주, 관리자만 조회할 수 있습니다.
+      allow read: if isResourceOwner(resource.data.userId) || isOwner() || isAdmin() || resource.data.userId == 'demo-user';
+
+      // 예약 등록은 본인 명의로만 가능하며, 보증금은 무조건 5,000원으로 고정되어 위조를 방지합니다.
+      allow create: if isAuthenticated() && (
+        request.resource.data.userId == request.auth.uid || 
+        request.resource.data.userId == 'demo-user'
+      ) && (
+        request.resource.data.paymentAmount == 5000 &&
+        request.resource.data.createdAt != null
+      );
+
+      // 예약 상태(status) 변경 흐름 제약:
+      allow update: if (
+        // A. 일반 사용자: 오직 본인의 예약을 'cancel'(예약 취소)로 변경하는 것만 허용됩니다.
+        (isResourceOwner(resource.data.userId) || resource.data.userId == 'demo-user') && 
+        request.resource.data.status == 'canceled' && 
+        resource.data.status == 'confirmed' &&
+        // 취소 시 결제 금액이나 매장 정보 등을 위조할 수 없도록 동결합니다.
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.seatId == resource.data.seatId &&
+        request.resource.data.paymentAmount == resource.data.paymentAmount
+      ) || (
+        // B. 업주/관리자: 방문 체크인(status -> visited) 및 퇴장 처리(status -> completed)만 수행할 수 있습니다.
+        (isOwner() || isAdmin() || request.auth.uid == 'demo-owner' || request.auth.uid == 'demo-admin') && (
+          // 체크인 전환: confirmed -> visited
+          (request.resource.data.status == 'visited' && resource.data.status == 'confirmed') ||
+          // 퇴장 완료 전환: visited -> completed
+          (request.resource.data.status == 'completed' && resource.data.status == 'visited')
+        )
+      ) || (
+        // C. 노쇼 마감 자동화: confirmed 상태인 예약을 'noshow_expired'로 자동 수거하는 것을 허용합니다.
+        (isOwner() || isAdmin() || request.auth.uid == 'demo-owner' || request.auth.uid == 'demo-admin' || isResourceOwner(resource.data.userId) || resource.data.userId == 'demo-user') &&
+        request.resource.data.status == 'noshow_expired' &&
+        resource.data.status == 'confirmed'
+      );
+
+      // 예약 및 결제 장부의 신뢰성을 보장하기 위해 예약 데이터의 물리적 삭제를 금지합니다.
+      allow delete: if false;
+    }
+  }
+}

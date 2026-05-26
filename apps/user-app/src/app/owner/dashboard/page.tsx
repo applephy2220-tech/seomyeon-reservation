@@ -4,11 +4,12 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { db } from '@shared/firebase/clientApp';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
-import { Seat, Reservation, SeatStatus } from '@shared/types';
+import { Seat, Reservation, SeatStatus, AiRecommendation } from '@shared/types';
 import { useRealtimeVenues } from '@shared/hooks/useRealtimeVenues';
 import { useRealtimeSeats } from '@shared/hooks/useRealtimeSeats';
 import { changeSeatStatus, verifyVisitCodeTransaction, cancelReservationAsNoShow, completeVisitTransaction } from '@shared/firebase/owner';
 import { createDealTransaction, cancelDealTransaction, useRealtimeDeals } from '@shared/firebase/deals';
+import { getAiRecommendations } from '@shared/services/recommendation';
 import { LoadingSpinner } from '@shared/components/LoadingSpinner';
 import { NotificationToast } from '@shared/components/NotificationToast';
 import { triggerNotification } from '@shared/firebase/notification';
@@ -21,9 +22,11 @@ import {
   ClipboardList, 
   LayoutGrid, 
   ShieldCheck, 
-  ArrowLeft,
-  Calendar,
-  Sparkles
+  ArrowLeft, 
+  Calendar, 
+  Sparkles,
+  CreditCard,
+  ChefHat
 } from 'lucide-react';
 
 const OwnerDealCountdown = ({ validUntil }: { validUntil: string }) => {
@@ -142,6 +145,11 @@ export default function OwnerDashboardPage() {
     // 4. 현재 열려있는 좌석 수
     const openSeatsCount = seats.filter(s => s.status === 'available').length;
 
+    // 5. 총 예약금 합산 (취소되지 않은 결제 예약의 합계)
+    const totalDeposits = reservations
+      .filter(r => r.status !== 'canceled')
+      .reduce((sum, r) => sum + (r.paymentAmount || 5000), 0);
+
     return {
       todayCount,
       confirmedCount,
@@ -150,9 +158,41 @@ export default function OwnerDashboardPage() {
       noshowCount,
       cancelledCount,
       dealUsedCount,
-      openSeatsCount
+      openSeatsCount,
+      totalDeposits
     };
   }, [reservations, seats]);
+
+  const aiInsights = React.useMemo(() => {
+    try {
+      const hasInsufficientData = !reservations || reservations.length === 0;
+      if (hasInsufficientData) {
+        return [
+          {
+            id: `ai-rec-insufficient-${selectedVenueId}`,
+            type: 'turnover_insight',
+            title: '✨ 실시간 AI 운영 가이드 대기 중',
+            description: '아직 분석할 주문 데이터가 부족합니다. 첫 실시간 테이블 예약 및 선주문 결제가 완료되면 정밀 AI 인사이트 추천 카드가 자동으로 활성화됩니다.',
+            severity: 'low',
+            createdAt: new Date().toISOString()
+          } as AiRecommendation
+        ];
+      }
+      return getAiRecommendations(selectedVenueId, seats, reservations, allDeals);
+    } catch (err) {
+      console.error('Error generating AI insights in useMemo:', err);
+      return [
+        {
+          id: `ai-rec-fallback-err-${selectedVenueId}`,
+          type: 'turnover_insight',
+          title: '✨ AI 네비게이터 일시 정지',
+          description: '아직 분석할 주문 데이터가 부족하거나 일시적인 동기화 대기 상태입니다.',
+          severity: 'low',
+          createdAt: new Date().toISOString()
+        } as AiRecommendation
+      ];
+    }
+  }, [selectedVenueId, seats, reservations, allDeals]);
 
   // Recent Streams
   const recentBookings = React.useMemo(() => {
@@ -278,6 +318,26 @@ export default function OwnerDashboardPage() {
     setDealBenefitType('service');
     setDealBenefitValue('하이볼 1잔 서비스');
     setDealDurationMinutes(30);
+  };
+
+  const handleAiActionClick = (rec: AiRecommendation) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const payload = rec.actionPayload as any;
+    if (rec.type === 'deal_trigger' && payload) {
+      const vacantSeat = seats.find(s => s.status === 'available');
+      if (vacantSeat) {
+        setOpenDealModalSeat(vacantSeat);
+        setDealTitle(payload.title);
+        setDealDescription(payload.description);
+        setDealBenefitType(payload.benefitType);
+        setDealBenefitValue(payload.benefitValue);
+        setDealDurationMinutes(payload.durationMinutes);
+      } else {
+        alert('현재 긴급딜을 즉시 발행할 수 있는 빈 좌석이 비어있지 않습니다.');
+      }
+    } else if (rec.type === 'no_show_warning' && payload) {
+      alert(`[AI 수사팀] ${payload.reservationId.slice(0, 8)}번 지각 예약 건에 대한 유선 체크(비상연락망) 및 노쇼 유예 시간 30분 카운트다운 진행 상태를 점검해 주세요.`);
+    }
   };
 
   const handleCancelDealClick = async (dealId: string, seatId: string) => {
@@ -494,9 +554,18 @@ export default function OwnerDashboardPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-          <span className="text-[10px] text-zinc-550 font-bold font-mono">FIRESTORE SYNC ACTIVE</span>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/owner/kitchen"
+            className="px-3.5 py-1.5 rounded-xl bg-orange-950/20 border border-orange-500/30 hover:border-orange-500 text-[10px] font-black text-orange-400 hover:text-white transition-all shadow-[0_0_10px_rgba(249,115,22,0.1)] flex items-center gap-1"
+          >
+            <ChefHat className="w-3.5 h-3.5 text-orange-500" />
+            주방 조리 대시보드
+          </Link>
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span className="text-[10px] text-zinc-550 font-bold font-mono">FIRESTORE SYNC ACTIVE</span>
+          </div>
         </div>
       </header>
 
@@ -533,7 +602,7 @@ export default function OwnerDashboardPage() {
 
       {/* Real-Time Statistics Neon Card Dashboard */}
       <section className="px-6 mt-6">
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3.5">
           {/* 1. 오늘 총 예약 */}
           <div className="p-4 rounded-2xl bg-zinc-900/40 border border-zinc-850/60 backdrop-blur-md hover:border-cyan-500/30 hover:shadow-[0_0_15px_rgba(34,211,238,0.04)] transition-all duration-300 group hover:-translate-y-0.5">
             <div className="flex justify-between items-start">
@@ -611,6 +680,19 @@ export default function OwnerDashboardPage() {
             </div>
             <p className="text-[8px] text-teal-400/70 mt-1 font-semibold">즉시 개방 좌석</p>
           </div>
+
+          {/* 7. 누적 예약금 */}
+          <div className="p-4 rounded-2xl bg-zinc-900/40 border border-zinc-850/60 backdrop-blur-md hover:border-amber-500/30 hover:shadow-[0_0_15px_rgba(245,158,11,0.04)] transition-all duration-300 group hover:-translate-y-0.5">
+            <div className="flex justify-between items-start">
+              <span className="text-[9px] font-black tracking-widest text-zinc-500 group-hover:text-amber-400 transition-colors uppercase">누적 예약금</span>
+              <CreditCard className="w-4 h-4 text-amber-400 animate-pulse" />
+            </div>
+            <div className="mt-2.5 flex items-baseline gap-0.5">
+              <span className="text-xl font-black text-white font-mono">{stats.totalDeposits.toLocaleString()}</span>
+              <span className="text-[10px] text-zinc-500 font-bold">원</span>
+            </div>
+            <p className="text-[8px] text-amber-500/70 mt-1 font-semibold">보증금/정산 대상액</p>
+          </div>
         </div>
 
         {/* Dynamic Reservation Sub-Breakdown Indicator Board */}
@@ -645,6 +727,73 @@ export default function OwnerDashboardPage() {
               <span className="text-orange-400 font-bold flex items-center gap-0.5">🔥 긴급딜 기여:</span>
               <span className="text-white font-extrabold">{stats.dealUsedCount}건</span>
             </div>
+          </div>
+        </div>
+      </section>
+
+      {/* AI Operations Navigator Section */}
+      <section className="px-6 mt-6">
+        <div className="p-5.5 rounded-3xl bg-gradient-to-tr from-purple-950/10 to-zinc-900/50 border border-purple-500/20 shadow-[0_0_20px_rgba(168,85,247,0.04)] space-y-4">
+          <div className="flex justify-between items-center pb-2 border-b border-zinc-900">
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
+              </span>
+              <h4 className="text-xs font-black tracking-widest text-purple-400 uppercase flex items-center gap-1.5">
+                ✨ AI 스마트 운영 네비게이터 (AI Insights)
+              </h4>
+            </div>
+            <span className="text-[9px] text-zinc-550 font-bold bg-purple-950/30 px-2 py-0.5 rounded border border-purple-500/20">
+              REAL-TIME NAVIGATOR ACTIVE
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {aiInsights.map((insight) => (
+              <div
+                key={insight.id}
+                className={`p-4 rounded-2xl border transition-all duration-300 flex flex-col justify-between ${
+                  insight.severity === 'high'
+                    ? 'bg-red-950/10 border-red-500/20 hover:border-red-500/30'
+                    : insight.severity === 'medium'
+                      ? 'bg-amber-950/10 border-amber-500/20 hover:border-amber-500/30'
+                      : 'bg-zinc-900/30 border-zinc-850 hover:border-zinc-800'
+                }`}
+              >
+                <div className="space-y-2">
+                  <div className="flex justify-between items-start">
+                    <span className={`px-2 py-0.5 rounded text-[8.5px] font-black uppercase tracking-wider ${
+                      insight.type === 'deal_trigger'
+                        ? 'bg-orange-950 text-orange-400 border border-orange-500/20'
+                        : insight.type === 'no_show_warning'
+                          ? 'bg-red-950 text-red-400 border border-red-500/20 animate-pulse'
+                          : 'bg-purple-950 text-purple-400 border border-purple-500/20'
+                    }`}>
+                      AI {insight.type === 'deal_trigger' ? '긴급딜 추천' : insight.type === 'no_show_warning' ? '노쇼 경보' : '운영 권고'}
+                    </span>
+                    <span className="text-[8px] text-zinc-600 font-semibold font-mono">실시간 분석</span>
+                  </div>
+                  <h5 className="text-xs font-black text-white">{insight.title}</h5>
+                  <p className="text-[10px] text-zinc-500 leading-relaxed">{insight.description}</p>
+                </div>
+
+                {insight.actionLabel && (
+                  <div className="mt-4 pt-3 border-t border-zinc-900/40 flex justify-end">
+                    <button
+                      onClick={() => handleAiActionClick(insight)}
+                      className={`px-3 py-1.5 rounded-lg text-[9px] font-black tracking-tight transition-all active:scale-[0.96] border ${
+                        insight.severity === 'high'
+                          ? 'bg-red-950/40 border-red-550/40 text-red-400 hover:bg-red-500 hover:text-black'
+                          : 'bg-orange-950/40 border-orange-550/40 text-orange-400 hover:bg-orange-500 hover:text-black shadow-[0_0_8px_rgba(249,115,22,0.1)]'
+                      }`}
+                    >
+                      {insight.actionLabel} →
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       </section>

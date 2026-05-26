@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>서면나우 - 오프라인 모드</title>
+  <style>
+    body {
+      background-color: #0B0B0C;
+      color: #E2E8F0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+      box-sizing: border-box;
+      text-align: center;
+    }
+    .container {
+      max-width: 320px;
+      padding: 30px 20px;
+      border-radius: 24px;
+      background: rgba(20, 20, 22, 0.6);
+      border: 1px solid rgba(168, 85, 247, 0.25);
+      box-shadow: 0 0 30px rgba(168, 85, 247, 0.1);
+      backdrop-filter: blur(10px);
+    }
+    .neon-logo {
+      font-size: 24px;
+      font-weight: 900;
+      letter-spacing: -0.05em;
+      background: linear-gradient(135deg, #a855f7, #06b6d4);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 20px;
+      text-shadow: 0 0 10px rgba(168, 85, 247, 0.3);
+    }
+    .wifi-icon {
+      width: 48px;
+      height: 48px;
+      color: #f97316;
+      filter: drop-shadow(0 0 8px rgba(249, 115, 22, 0.4));
+      margin: 15px auto;
+      animation: pulse 2s infinite;
+    }
+    h1 {
+      font-size: 16px;
+      font-weight: 800;
+      margin: 10px 0;
+    }
+    p {
+      font-size: 11px;
+      color: #71717a;
+      line-height: 1.6;
+      margin-bottom: 25px;
+    }
+    .btn {
+      display: inline-block;
+      width: 100%;
+      padding: 12px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #8b5cf6, #3b82f6);
+      color: white;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 700;
+      box-shadow: 0 0 15px rgba(139, 92, 246, 0.3);
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn:active {
+      transform: scale(0.97);
+      opacity: 0.9;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(0.95); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="neon-logo">서면나우</div>
+    <svg class="wifi-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 5.636a9 9 0 010 12.728m0 0l-2.829-2.829m2.829 2.829L21 21M15.536 8.464a5 5 0 010 7.072m0 0l-2.829-2.829m-4.243 2.829a4.978 4.978 0 01-1.414-3.536 5 5 0 015.657-4.95m0 0l-2.829 2.829M5.636 5.636a9 9 0 000 12.728m0 0l2.829-2.829M12 12a1 1 0 11-2 0 1 1 0 012 0z"></path>
+    </svg>
+    <h1>네트워크 연결이 지연되고 있습니다</h1>
+    <p>
+      현재 네트워크 연결 상태가 불안정하여 페이지를 오프라인으로 렌더링했습니다. <br>
+      인터넷망이 복구되면 실시간 서면 술집 예약 및 긴급딜 기능을 즉시 정상 가동합니다.
+    </p>
+    <button class="btn" onclick="window.location.reload()">다시 연결 시도</button>
+  </div>
+</body>
+</html>

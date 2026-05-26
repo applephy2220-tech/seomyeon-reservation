@@ -4,18 +4,25 @@ import React, { use, useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { db } from '@shared/firebase/clientApp';
-import { doc, onSnapshot } from 'firebase/firestore';
-import { Seat, Deal } from '@shared/types';
+import { doc, onSnapshot, collection, query, where } from 'firebase/firestore';
+import { Seat, Deal, MenuItem, OrderItem, SelectedOption } from '@shared/types';
 import { useRealtimeVenueDetail } from '@shared/hooks/useRealtimeVenues';
 import { LoadingSpinner } from '@shared/components/LoadingSpinner';
 import { releaseSeat, confirmMockPaymentTransaction } from '@shared/firebase/booking';
+import { getUserPersonalizedMenus } from '@shared/services/recommendation';
+import { Reservation } from '@shared/types';
 import { 
   ArrowLeft, 
   Clock, 
   CreditCard, 
   ShieldCheck, 
   AlertCircle, 
-  Info
+  Info,
+  Plus, 
+  Minus, 
+  ShoppingCart, 
+  ChefHat, 
+  Sparkles
 } from 'lucide-react';
 
 interface ReservationPageProps {
@@ -34,6 +41,64 @@ export default function ReservationPage({ params }: ReservationPageProps) {
   const [selectedMethod, setSelectedMethod] = useState<string>('card');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [expiredNotification, setExpiredNotification] = useState(false);
+  const paymentConfirmedRef = React.useRef(false);
+
+  // 메뉴 리스트 및 장바구니 선주문 상태
+  const [venueMenus, setVenueMenus] = useState<MenuItem[]>([]);
+  const [selectedOrders, setSelectedOrders] = useState<OrderItem[]>([]);
+  const [selectedEta, setSelectedEta] = useState<string>('도착 즉시 서빙');
+  
+  // 사용자의 이전 예약 내역 (AI 맞춤형 메뉴 추천 전용)
+  const [userPastReservations, setUserPastReservations] = useState<Reservation[]>([]);
+  
+  // 메뉴 상세 옵션 모달 전용 상태
+  const [activeOptionMenu, setActiveOptionMenu] = useState<MenuItem | null>(null);
+  const [tempSelectedOptions, setTempSelectedOptions] = useState<SelectedOption[]>([]);
+  const [tempQuantity, setTempQuantity] = useState<number>(1);
+
+  // Fetch venue detail using custom hook (declared early to allow access in effects)
+  const { venue, loading: venueLoading } = useRealtimeVenueDetail(seat?.venueId || '');
+
+  // Fetch past bookings of 'demo-user' to support AI personalization fuzzy matchers
+  useEffect(() => {
+    const resCol = collection(db, 'reservations');
+    const q = query(resCol, where('userId', '==', 'demo-user'));
+    const unsubscribe = onSnapshot(q, (snap) => {
+      const list: Reservation[] = [];
+      snap.forEach((docSnap) => {
+        list.push({ id: docSnap.id, ...docSnap.data() } as Reservation);
+      });
+      setUserPastReservations(list);
+    }, (err) => {
+      console.error('Error fetching past reservations:', err);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const personalizedAiMenus = React.useMemo(() => {
+    return getUserPersonalizedMenus('demo-user', userPastReservations, venueMenus);
+  }, [userPastReservations, venueMenus]);
+
+  // Subscribe to menus for the specific venue in real-time
+  useEffect(() => {
+    if (!seat?.venueId) return;
+
+    const menusCol = collection(db, 'menus');
+    const q = query(menusCol, where('venueId', '==', seat.venueId));
+    
+    const unsubscribe = onSnapshot(q, (snap) => {
+      const items: MenuItem[] = [];
+      snap.forEach((docSnap) => {
+        items.push({ id: docSnap.id, ...docSnap.data() } as MenuItem);
+      });
+      setVenueMenus(items);
+    }, (err) => {
+      console.error('Error fetching menus:', err);
+    });
+
+    return () => unsubscribe();
+  }, [seat?.venueId]);
 
   // Subscribe to the specific seat document in real-time
   useEffect(() => {
@@ -63,6 +128,118 @@ export default function ReservationPage({ params }: ReservationPageProps) {
     return () => unsubscribe();
   }, [seatId, router]);
 
+  // Toss SDK Script dynamic loader
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const script = document.createElement('script');
+    script.src = 'https://js.tosspayments.com/v1/';
+    script.async = true;
+    document.body.appendChild(script);
+    return () => {
+      // Clean up script on unmount
+      if (document.body.contains(script)) {
+        document.body.removeChild(script);
+      }
+    };
+  }, []);
+
+  // Listen to Toss Payments error/failure query redirect parameters
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const urlParams = new URLSearchParams(window.location.search);
+    const paymentError = urlParams.get('paymentError');
+    if (paymentError) {
+      alert('결제 도중 오류가 발생했거나 결제창이 닫혔습니다. 선점을 다시 시작해 주세요.');
+      
+      // Purge query keys
+      const url = new URL(window.location.href);
+      url.searchParams.delete('paymentError');
+      url.searchParams.delete('message');
+      window.history.replaceState({}, '', url.pathname + url.search);
+    }
+  }, []);
+
+  // Process success callback redirect from Toss secure server API
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const urlParams = new URLSearchParams(window.location.search);
+    const paymentSuccess = urlParams.get('paymentSuccess');
+    const paymentKey = urlParams.get('paymentKey');
+    const dealId = urlParams.get('dealId');
+    const ordersStr = urlParams.get('orders');
+    const etaStr = urlParams.get('eta');
+    const amountStr = urlParams.get('amount') || '5000';
+
+    if (paymentSuccess === 'true' && paymentKey && seatId && seat && venue) {
+      // Prevent double checkout finalizations in StrictMode or via Realtime Listener triggers
+      if (paymentConfirmedRef.current) {
+        console.log('[Toss Page] Reservation already finalized. Suppressing double execution.');
+        return;
+      }
+
+      const finalizeTossReservation = async () => {
+        paymentConfirmedRef.current = true;
+        setIsSubmitting(true);
+        try {
+          let parsedOrders: OrderItem[] = [];
+          if (ordersStr) {
+            try {
+              parsedOrders = JSON.parse(decodeURIComponent(ordersStr));
+            } catch (e) {
+              console.error('Failed to parse pre-ordered items from query:', e);
+            }
+          }
+
+          const finalAmount = Number(amountStr) || 5000;
+          const eta = etaStr ? decodeURIComponent(etaStr) : '';
+
+          console.log('[Toss Page] Confirming atomic checkout transaction in Firestore for paymentKey:', paymentKey);
+          
+          const res = await confirmMockPaymentTransaction(
+            seatId,
+            venue.id,
+            venue.name,
+            seat.label,
+            'demo-user',
+            dealId || null,
+            paymentKey,
+            parsedOrders,
+            eta,
+            finalAmount
+          );
+
+          if (res.success && res.reservationId) {
+            router.replace(`/reservation-success?id=${res.reservationId}`);
+          } else {
+            // Double check: if seat is already reserved, this means the transaction completed successfully in a previous tick.
+            // We gracefully downgrade this console warning and redirect the user instead of displaying toxic alert errors.
+            if (seat.status === 'reserved' && seat.currentReservationId) {
+              console.warn('[Toss Page] Duplicate finalization triggered but seat is already reserved. Routing to success page:', res.message);
+              router.replace(`/reservation-success?id=${seat.currentReservationId}`);
+              return;
+            }
+
+            console.error('[Toss Page] Transaction finalization failed:', res.message);
+            alert(res.message || '예약 내역 생성 도중 문제가 발생했습니다.');
+            setIsSubmitting(false);
+          }
+        } catch (err) {
+          console.error('[Toss Page] Firestore write transaction crashed:', err);
+          // Safety fallback redirect if the seat shows reserved by us
+          if (seat.status === 'reserved' && seat.currentReservationId) {
+            router.replace(`/reservation-success?id=${seat.currentReservationId}`);
+            return;
+          }
+          alert('예약 확정 완료 과정에서 예기치 못한 오류가 발생했습니다.');
+          setIsSubmitting(false);
+        }
+      };
+
+      finalizeTossReservation();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seatId, seat, venue]);
+
   // Subscribe to the active deal document if seat.activeDealId is present
   useEffect(() => {
     if (!seat || !seat.activeDealId) {
@@ -82,10 +259,10 @@ export default function ReservationPage({ params }: ReservationPageProps) {
     });
 
     return () => unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seat?.activeDealId]);
 
-  // Fetch venue detail using custom hook
-  const { venue, loading: venueLoading } = useRealtimeVenueDetail(seat?.venueId || '');
+
 
   // 5-minute Countdown Timer logic
   useEffect(() => {
@@ -144,30 +321,152 @@ export default function ReservationPage({ params }: ReservationPageProps) {
     }
   };
 
+  // 메뉴 클릭 시 옵션 모달 트리거 또는 즉시 장바구니 추가
+  const handleMenuClick = (menu: MenuItem) => {
+    if (menu.options && menu.options.length > 0) {
+      setActiveOptionMenu(menu);
+      setTempSelectedOptions(
+        menu.options.map(opt => ({
+          optionName: opt.name,
+          itemName: opt.items[0].name,
+          price: opt.items[0].price
+        }))
+      );
+      setTempQuantity(1);
+    } else {
+      // 옵션이 없는 메뉴는 즉시 장바구니 추가
+      const existing = selectedOrders.find(item => item.menuId === menu.id);
+      if (existing) {
+        setSelectedOrders(selectedOrders.map(item => 
+          item.menuId === menu.id ? { ...item, quantity: item.quantity + 1 } : item
+        ));
+      } else {
+        setSelectedOrders([...selectedOrders, {
+          menuId: menu.id,
+          name: menu.name,
+          price: menu.price,
+          quantity: 1,
+          selectedOptions: []
+        }]);
+      }
+    }
+  };
+
+  // 옵션 변경 핸들러
+  const handleOptionChange = (optionName: string, itemName: string, price: number) => {
+    setTempSelectedOptions(prev => 
+      prev.map(opt => opt.optionName === optionName ? { optionName, itemName, price } : opt)
+    );
+  };
+
+  // 옵션 선택 후 최종 장바구니 담기 완료
+  const handleAddWithOptionConfirm = () => {
+    if (!activeOptionMenu) return;
+
+    const extraPrice = tempSelectedOptions.reduce((sum, opt) => sum + opt.price, 0);
+    const finalItemPrice = activeOptionMenu.price + extraPrice;
+
+    // 옵션 구성이 완전히 동일한 기존 품목이 있는지 확인
+    const optionKey = JSON.stringify(tempSelectedOptions);
+    const existingIndex = selectedOrders.findIndex(item => 
+      item.menuId === activeOptionMenu.id && JSON.stringify(item.selectedOptions) === optionKey
+    );
+
+    if (existingIndex > -1) {
+      const updated = [...selectedOrders];
+      updated[existingIndex].quantity += tempQuantity;
+      setSelectedOrders(updated);
+    } else {
+      setSelectedOrders([...selectedOrders, {
+        menuId: activeOptionMenu.id,
+        name: activeOptionMenu.name,
+        price: finalItemPrice,
+        quantity: tempQuantity,
+        selectedOptions: tempSelectedOptions
+      }]);
+    }
+
+    setActiveOptionMenu(null);
+  };
+
+  // 장바구니 내 수량 조절
+  const handleUpdateCartQuantity = (index: number, nextQty: number) => {
+    if (nextQty <= 0) {
+      setSelectedOrders(selectedOrders.filter((_, i) => i !== index));
+    } else {
+      setSelectedOrders(selectedOrders.map((item, i) => 
+        i === index ? { ...item, quantity: nextQty } : item
+      ));
+    }
+  };
+
   const handlePayment = async () => {
     if (!seat || !venue) return;
 
     setIsSubmitting(true);
-    try {
-      const res = await confirmMockPaymentTransaction(
-        seat.id,
-        venue.id,
-        venue.name,
-        seat.label,
-        'demo-user', // Mock authenticated user UID
-        seat.activeDealId
-      );
+    
+    // Calculate total price
+    const preOrderTotal = selectedOrders.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const finalAmount = 5000 + preOrderTotal;
+    
+    const clientKey = process.env.NEXT_PUBLIC_TOSS_CLIENT_KEY;
+    const ordersJson = encodeURIComponent(JSON.stringify(selectedOrders));
+    const etaEncoded = encodeURIComponent(selectedEta);
 
-      if (res.success && res.reservationId) {
-        // Redirect to success screen with reservation identifier
-        router.replace(`/reservation-success?id=${res.reservationId}`);
-      } else {
-        alert(res.message || '결제 진행 중 오류가 발생했습니다.');
+    // 1. Hybrid Sandbox Mode: Bypasses native Toss window when API keys are absent/mock
+    if (!clientKey || clientKey === 'mock') {
+      console.log('[Toss Page] NEXT_PUBLIC_TOSS_CLIENT_KEY is mock. Simulating secure custom checkout redirect.');
+      
+      setTimeout(() => {
+        const mockPaymentKey = 'mock-key-' + Date.now();
+        const mockOrderId = 'mock-order-' + Date.now();
+        
+        const mockSuccessUrl = new URL('/api/payment/success', window.location.origin);
+        mockSuccessUrl.searchParams.set('paymentKey', mockPaymentKey);
+        mockSuccessUrl.searchParams.set('orderId', mockOrderId);
+        mockSuccessUrl.searchParams.set('amount', finalAmount.toString());
+        mockSuccessUrl.searchParams.set('seatId', seatId);
+        mockSuccessUrl.searchParams.set('venueId', venue.id);
+        mockSuccessUrl.searchParams.set('venueName', venue.name);
+        mockSuccessUrl.searchParams.set('seatLabel', seat.label);
+        mockSuccessUrl.searchParams.set('userId', 'demo-user');
+        mockSuccessUrl.searchParams.set('orders', ordersJson);
+        mockSuccessUrl.searchParams.set('eta', etaEncoded);
+        mockSuccessUrl.searchParams.set('paymentSuccess', 'true');
+        if (seat.activeDealId) {
+          mockSuccessUrl.searchParams.set('dealId', seat.activeDealId);
+        }
+        
+        window.location.href = mockSuccessUrl.toString();
+      }, 1200);
+      return;
+    }
+
+    try {
+      // 2. Real Toss Payments card checkout redirect trigger
+      // @ts-expect-error: TossPayments is dynamically loaded via external CDN script
+      const TossPayments = window.TossPayments;
+      if (!TossPayments) {
+        alert('결제 연동 모듈을 불러오는 중입니다. 잠시 후 다시 시도해 주세요.');
         setIsSubmitting(false);
+        return;
       }
+
+      const tossInstance = TossPayments(clientKey);
+      const orderId = `order_${seatId}_${Date.now()}`;
+      const redirectUri = `${window.location.origin}/api/payment/success`;
+
+      await tossInstance.requestPayment('카드', {
+        amount: finalAmount,
+        orderId,
+        orderName: `${venue.name} - ${seat.label} 테이블 예약 ${selectedOrders.length > 0 ? `외 선주문 ${selectedOrders.length}종` : ''}`,
+        successUrl: `${redirectUri}?seatId=${seatId}&venueId=${venue.id}&venueName=${encodeURIComponent(venue.name)}&seatLabel=${encodeURIComponent(seat.label)}&userId=demo-user&dealId=${seat.activeDealId || ''}&orders=${ordersJson}&eta=${etaEncoded}&amount=${finalAmount}`,
+        failUrl: `${window.location.origin}/reservation/${seatId}?paymentError=true`,
+      });
+      
     } catch (err) {
-      console.error('Payment error:', err);
-      alert('결제 처리 중 예상치 못한 오류가 발생했습니다.');
+      console.error('[Toss Page] requestPayment crashed:', err);
+      alert('결제창을 실행하는 중 오류가 발생했습니다: ' + (err instanceof Error ? err.message : String(err)));
       setIsSubmitting(false);
     }
   };
@@ -198,6 +497,9 @@ export default function ReservationPage({ params }: ReservationPageProps) {
 
   // Progress percentage for visual timer
   const progressPercent = Math.min(100, Math.max(0, (timeLeft / 300) * 100));
+
+  const preOrderTotal = selectedOrders.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const finalAmount = 5000 + preOrderTotal;
 
   return (
     <main className="min-h-screen bg-[#0B0B0C] text-white pb-24 max-w-md mx-auto relative shadow-2xl border-x border-zinc-900">
@@ -292,6 +594,187 @@ export default function ReservationPage({ params }: ReservationPageProps) {
         </div>
       </div>
 
+      {/* 3.5 Signature Menus Pre-order Section */}
+      <section className="mx-6 mt-8 space-y-4">
+        <div className="flex items-center justify-between border-b border-zinc-900 pb-2">
+          <h4 className="text-xs font-black tracking-widest text-orange-400 uppercase flex items-center gap-1.5 animate-pulse">
+            <ChefHat className="w-4 h-4 text-orange-500 animate-bounce" />
+            도착 즉시 조리! 선주문 메뉴 추가
+          </h4>
+          <span className="text-[9px] text-zinc-550">인기 시그니처</span>
+        </div>
+
+        {/* ETA Picker */}
+        <div className="p-4.5 rounded-2xl bg-zinc-900/40 border border-zinc-800 backdrop-blur-md space-y-3">
+          <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider pl-0.5">
+            ⏱️ 매장 도착 예정 시간 (ETA)
+          </label>
+          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+            {['도착 즉시 서빙', '10분 뒤 도착', '20분 뒤 도착', '30분 뒤 도착'].map((eta) => (
+              <button
+                key={eta}
+                type="button"
+                onClick={() => setSelectedEta(eta)}
+                className={`px-3 py-2 rounded-xl text-[10.5px] font-black whitespace-nowrap transition-all border ${
+                  selectedEta === eta
+                    ? 'bg-orange-950/30 text-orange-450 border-orange-500/40 shadow-[0_0_10px_rgba(249,115,22,0.1)]'
+                    : 'bg-zinc-950/60 text-zinc-500 border-zinc-900 hover:text-zinc-300'
+                }`}
+              >
+                {eta}
+              </button>
+            ))}
+          </div>
+          <p className="text-[9px] text-zinc-650 pl-0.5 leading-normal font-medium">
+            💡 지정한 도착 시간에 맞춰 매장에서 즉시 서빙할 수 있도록 조리를 시작합니다.
+          </p>
+        </div>
+
+        {/* AI Personalized Signature Menu Section */}
+        {personalizedAiMenus.length > 0 && (
+          <div className="p-4 rounded-2xl bg-gradient-to-tr from-purple-950/10 to-zinc-900/50 border border-purple-500/20 shadow-[0_0_15px_rgba(168,85,247,0.03)] space-y-3">
+            <span className="text-[10px] font-black text-purple-400 uppercase tracking-widest flex items-center gap-1">
+              <Sparkles className="w-3.5 h-3.5 text-purple-400 animate-pulse fill-purple-400" />
+              ✨ AI 단골손님 취향 저격 메뉴
+            </span>
+            <div className="flex gap-3 overflow-x-auto pb-1 scrollbar-none">
+              {personalizedAiMenus.map((menu) => {
+                return (
+                  <div
+                    key={`ai-${menu.id}`}
+                    onClick={() => handleMenuClick(menu)}
+                    className="flex-shrink-0 w-36 p-2.5 rounded-xl bg-zinc-950/60 border border-zinc-850 hover:border-purple-500/30 transition-all cursor-pointer text-center group"
+                  >
+                    <span className="text-[9px] font-black text-purple-400 bg-purple-950/40 px-1.5 py-0.5 rounded border border-purple-500/20">
+                      AI 추천
+                    </span>
+                    <span className="text-xs font-bold text-white block mt-2 truncate">{menu.name}</span>
+                    <span className="text-[10px] font-black text-orange-450 block mt-1">{menu.price.toLocaleString()}원</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Menu Cards List */}
+        <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-none snap-x snap-mandatory">
+          {venueMenus.map((menu) => {
+            const isInCart = selectedOrders.some(item => item.menuId === menu.id);
+            const cartQty = selectedOrders.filter(item => item.menuId === menu.id).reduce((sum, item) => sum + item.quantity, 0);
+
+            return (
+              <div 
+                key={menu.id}
+                onClick={() => handleMenuClick(menu)}
+                className="w-[200px] flex-shrink-0 snap-start p-3.5 rounded-2xl bg-zinc-900/60 border border-zinc-850 hover:border-zinc-700 transition-all flex flex-col justify-between cursor-pointer group"
+              >
+                <div className="space-y-2">
+                  <div className="relative h-28 w-full rounded-xl overflow-hidden bg-zinc-950">
+                    <img 
+                      src={menu.imageUrl} 
+                      alt={menu.name}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+                    {menu.isPopular && (
+                      <span className="absolute top-2 left-2 inline-flex items-center gap-0.5 rounded bg-orange-500 border border-orange-400 px-1.5 py-0.5 text-[8px] font-black text-black shadow-[0_0_6px_rgba(249,115,22,0.4)]">
+                        <Sparkles className="w-2.5 h-2.5 fill-black" />
+                        HIT
+                      </span>
+                    )}
+                  </div>
+                  
+                  <div>
+                    <h5 className="text-xs font-black text-white group-hover:text-orange-400 transition-colors">{menu.name}</h5>
+                    <p className="text-[9px] text-zinc-500 mt-0.5 line-clamp-2 leading-relaxed">{menu.description}</p>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex items-center justify-between pt-2 border-t border-zinc-900/60">
+                  <span className="text-xs font-black text-orange-450">{menu.price.toLocaleString()}원</span>
+                  
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleMenuClick(menu);
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-[9px] font-black tracking-tight transition-all border ${
+                      isInCart 
+                        ? 'bg-orange-950/40 border-orange-550/40 text-orange-400'
+                        : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700'
+                    }`}
+                  >
+                    {isInCart ? `담김 (${cartQty})` : '추가하기'}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Selected Pre-order Cart Summary */}
+        {selectedOrders.length > 0 && (
+          <div className="p-4.5 rounded-2xl bg-gradient-to-tr from-orange-950/15 to-zinc-900/50 border border-orange-550/20 shadow-[0_0_20px_rgba(249,115,22,0.06)] space-y-3.5 animate-slideDown">
+            <div className="flex items-center justify-between border-b border-orange-500/10 pb-2">
+              <span className="text-[10px] font-black text-orange-400 uppercase tracking-widest flex items-center gap-1">
+                <ShoppingCart className="w-3.5 h-3.5 text-orange-500" />
+                선주문 장바구니 ({selectedOrders.reduce((sum, item) => sum + item.quantity, 0)}개)
+              </span>
+              <button 
+                type="button" 
+                onClick={() => setSelectedOrders([])} 
+                className="text-[9px] font-bold text-zinc-650 hover:text-zinc-400"
+              >
+                비우기
+              </button>
+            </div>
+
+            <div className="space-y-2 max-h-40 overflow-y-auto scrollbar-none pr-1">
+              {selectedOrders.map((item, idx) => (
+                <div key={idx} className="flex justify-between items-center bg-zinc-950/60 p-2.5 rounded-xl border border-zinc-905">
+                  <div className="space-y-0.5">
+                    <span className="text-xs font-bold text-white block">{item.name}</span>
+                    {item.selectedOptions.length > 0 && (
+                      <span className="text-[9px] text-zinc-550 block font-medium">
+                        옵션: {item.selectedOptions.map(opt => `${opt.optionName}(${opt.itemName})`).join(', ')}
+                      </span>
+                    )}
+                    <span className="text-[10px] font-black text-orange-450">
+                      {(item.price * item.quantity).toLocaleString()}원
+                    </span>
+                  </div>
+
+                  {/* Quantity Counter */}
+                  <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-lg p-1">
+                    <button
+                      type="button"
+                      onClick={() => handleUpdateCartQuantity(idx, item.quantity - 1)}
+                      className="p-1 rounded bg-zinc-950 text-zinc-400 hover:text-white"
+                    >
+                      <Minus className="w-3 h-3" />
+                    </button>
+                    <span className="text-xs font-black font-mono w-4 text-center">{item.quantity}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleUpdateCartQuantity(idx, item.quantity + 1)}
+                      className="p-1 rounded bg-zinc-950 text-zinc-400 hover:text-white"
+                    >
+                      <Plus className="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="pt-2 border-t border-zinc-900/60 flex justify-between items-center text-xs">
+              <span className="text-zinc-550 font-bold">선주문 안주 총액</span>
+              <span className="text-sm font-black text-orange-450">{preOrderTotal.toLocaleString()}원</span>
+            </div>
+          </div>
+        )}
+      </section>
+
       {/* 4. Payment Selection (Mock) */}
       <section className="mt-8 px-6 space-y-3">
         <h4 className="text-xs font-black tracking-widest text-zinc-400 uppercase flex items-center gap-1.5">
@@ -358,12 +841,109 @@ export default function ReservationPage({ params }: ReservationPageProps) {
             ) : (
               <>
                 <ShieldCheck className="w-4 h-4" />
-                <span>5,000원 결제 완료하기</span>
+                <span>{finalAmount.toLocaleString()}원 결제 완료하기</span>
               </>
             )}
           </button>
         </div>
       </div>
+
+      {/* Option Customizer Modal Overlay */}
+      {activeOptionMenu && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
+          <div className="bg-zinc-950 border border-zinc-800 rounded-3xl w-full max-w-sm overflow-hidden shadow-[0_0_50px_rgba(249,115,22,0.15)] animate-slideUp">
+            {/* Header */}
+            <div className="p-5 border-b border-zinc-900 flex justify-between items-center bg-zinc-900/20">
+              <div>
+                <h4 className="text-sm font-black text-white">{activeOptionMenu.name}</h4>
+                <p className="text-[10px] text-zinc-500 mt-0.5">원하시는 옵션을 선택해 주세요.</p>
+              </div>
+              <button 
+                onClick={() => setActiveOptionMenu(null)}
+                className="text-xs text-zinc-500 hover:text-white"
+              >
+                닫기
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-5 space-y-5 max-h-[60vh] overflow-y-auto scrollbar-none">
+              {activeOptionMenu.options?.map((opt, optIdx) => (
+                <div key={optIdx} className="space-y-2.5">
+                  <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">
+                    {opt.name} {opt.required && <span className="text-red-500">*필수</span>}
+                  </label>
+                  <div className="space-y-2">
+                    {opt.items.map((item, itemIdx) => {
+                      const isSelected = tempSelectedOptions.some(
+                        t => t.optionName === opt.name && t.itemName === item.name
+                      );
+                      return (
+                        <div 
+                          key={itemIdx}
+                          onClick={() => handleOptionChange(opt.name, item.name, item.price)}
+                          className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
+                            isSelected 
+                              ? 'bg-orange-950/20 border-orange-500/50 text-white' 
+                              : 'bg-zinc-900/30 border-zinc-900 text-zinc-450 hover:text-zinc-350'
+                          }`}
+                        >
+                          <span className="text-xs font-bold">{item.name}</span>
+                          <span className="text-xs font-black text-orange-450">
+                            {item.price > 0 ? `+${item.price.toLocaleString()}원` : '기본'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+
+              {/* Quantity */}
+              <div className="flex justify-between items-center pt-4 border-t border-zinc-900">
+                <span className="text-xs font-bold text-zinc-400">수량 선택</span>
+                <div className="flex items-center gap-3 bg-zinc-900 border border-zinc-800 rounded-xl p-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setTempQuantity(Math.max(1, tempQuantity - 1))}
+                    className="p-1 rounded bg-zinc-950 text-zinc-400 hover:text-white"
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                  </button>
+                  <span className="text-xs font-black font-mono w-6 text-center">{tempQuantity}</span>
+                  <button
+                    type="button"
+                    onClick={() => setTempQuantity(tempQuantity + 1)}
+                    className="p-1 rounded bg-zinc-950 text-zinc-400 hover:text-white"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Action Bar */}
+            <div className="p-4 bg-zinc-900/40 border-t border-zinc-900 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setActiveOptionMenu(null)}
+                className="flex-1 py-3 text-xs font-bold bg-zinc-900 border border-zinc-800 rounded-xl text-zinc-450 hover:text-white"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={handleAddWithOptionConfirm}
+                className="flex-[2] py-3 text-xs font-black bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl text-black hover:brightness-110 shadow-[0_0_20px_rgba(249,115,22,0.2)]"
+              >
+                {(
+                  (activeOptionMenu.price + tempSelectedOptions.reduce((sum, opt) => sum + opt.price, 0)) * tempQuantity
+                ).toLocaleString()}원 담기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

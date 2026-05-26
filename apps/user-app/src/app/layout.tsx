@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { PWARegister } from "@shared/components/PWARegister";
+import { KakaoTokenListener } from "@shared/components/KakaoTokenListener";
 import { NotificationToast } from "@shared/components/NotificationToast";
 
 const geistSans = Geist({
@@ -56,6 +57,7 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-[#0B0B0C] text-slate-100 min-h-screen selection:bg-purple-500 selection:text-black`}
       >
         <PWARegister />
+        <KakaoTokenListener />
         <NotificationToast userId="demo-user" role="user" />
         {children}
       </body>

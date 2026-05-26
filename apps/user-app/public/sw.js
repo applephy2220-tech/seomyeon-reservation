@@ -3,6 +3,7 @@ const CACHE_NAME = 'seomyeon-reservation-cache-v1';
 const ASSETS_TO_CACHE = [
   '/',
   '/manifest.json',
+  '/offline.html',
   '/icons/icon-192x192.png',
   '/icons/icon-512x512.png'
 ];
@@ -53,6 +54,12 @@ self.addEventListener('fetch', (event) => {
         .catch(() => {
           return caches.match(event.request).then((cachedResponse) => {
             if (cachedResponse) return cachedResponse;
+            
+            // If the request is for an HTML page, return the custom offline fallback page
+            if (event.request.mode === 'navigate' || (event.request.headers.get('accept') && event.request.headers.get('accept').includes('text/html'))) {
+              return caches.match('/offline.html');
+            }
+            
             // Return index html shell as fallback
             return caches.match('/');
           });

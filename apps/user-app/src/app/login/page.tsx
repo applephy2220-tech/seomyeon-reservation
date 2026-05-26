@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useAuth } from '@shared/hooks/useAuth';
 import { seedFirestoreData } from '@shared/utils/seedData';
 import { BottomNavigation } from '@shared/components/BottomNavigation';
@@ -20,6 +21,7 @@ import {
 export default function LoginPage() {
   const { user, profile, loading, error, loginOrRegister, logout } = useAuth();
   const { seats } = useRealtimeSeats({ onlyAvailable: true });
+  const router = useRouter();
   
   // Tab control: 'email' | 'phone'
   const [authTab, setAuthTab] = useState<'email' | 'phone'>('email');
@@ -75,8 +77,25 @@ export default function LoginPage() {
     setSeedStatus(result);
   };
 
-  const handleKakaoMockLogin = () => {
-    alert('카카오 간편 로그인 UI 트리거! 실제 OAuth 연동은 다음 단계에서 지원합니다.');
+  const handleKakaoMockLogin = async () => {
+    const kakaoClientId = process.env.NEXT_PUBLIC_KAKAO_CLIENT_ID;
+    
+    if (!kakaoClientId || kakaoClientId === 'mock') {
+      // Mock Login Mode
+      setAuthLoading(true);
+      try {
+        await loginOrRegister('kakao-demo-user@kakao.com', 'kakao-demo-password', '카카오단골손님');
+        router.push('/');
+      } catch (err) {
+        console.error('Mock Kakao login error:', err);
+      } finally {
+        setAuthLoading(false);
+      }
+    } else {
+      // Real OAuth Mode
+      const redirectUri = `${window.location.origin}/api/auth/kakao`;
+      window.location.href = `https://kauth.kakao.com/oauth/authorize?response_type=code&client_id=${kakaoClientId}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+    }
   };
 
   return (
